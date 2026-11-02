@@ -149,7 +149,12 @@ it won't run on an older Intel Mac. To support one, build on an Intel Mac.
 
 ### Windows
 
-Windows apps have to be built on Windows. On a Windows PC with Python 3.11+:
+Windows apps have to be built on Windows. GitHub does it: every push to `main` runs
+`.github/workflows/windows.yml` on a Windows machine. It runs the tests, builds the app, checks
+that it opens, and attaches `StudyPal-windows` to the run. To build without pushing, go to Actions →
+Windows build → **Run workflow**. Download the zip from the run's page (it's kept for 30 days).
+
+To build it yourself on a Windows PC with Python 3.11+:
 
 ```bat
 py -3.11 -m venv .venv
