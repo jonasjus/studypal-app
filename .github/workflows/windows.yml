@@ -1,0 +1,55 @@
+# Builds the Windows app on one of GitHub's Windows machines, since PyInstaller can't build it on a Mac.
+# Runs on every push to main, and by hand from the Actions tab (Run workflow). The zip to give people
+# is attached to the run as "StudyPal-windows".
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        shell: cmd
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python -m pip install --upgrade pip
+          .venv\Scripts\pip install -e ".[dev]"
+
+      - name: Tests
+        shell: cmd
+        run: .venv\Scripts\python -m pytest -q
+
+      - name: Build
+        shell: cmd
+        run: packaging\build-windows.bat
+
+      # Opens the built app with sample data and checks the page loads and reaches Python. The runner's
+      # desktop may not be able to show a WebView2 window, so a failure here doesn't fail the build.
+      - name: Smoke test
+        continue-on-error: true
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $env:STUDYPAL_SMOKE_OUT = "$PWD\smoke.txt"
+          $p = Start-Process -FilePath dist\StudyPal\StudyPal.exe -ArgumentList "--demo","--smoke-test" -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Output "timed out" }
+          if (-not (Test-Path smoke.txt)) { Write-Output "no result"; exit 1 }
+          Get-Content smoke.txt
+          if (-not (Select-String -Path smoke.txt -Pattern "maths on" -Quiet)) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StudyPal-windows
+          path: dist/StudyPal-windows.zip
+          retention-days: 30

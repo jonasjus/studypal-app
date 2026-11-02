@@ -1,0 +1,16 @@
+# Settings for the StudyPal Supabase project, applied with `supabase config push`.
+project_id = "studypal"
+
+[auth]
+enabled = true
+# The app signs people in by email and password inside its own window; no web pages are involved.
+site_url = "http://localhost"
+minimum_password_length = 8
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+# Supabase's built-in email service only delivers to the project's own team members, so confirmation
+# emails would never reach a friend. New accounts work straight away instead. Turn this on once the
+# project sends email through your own SMTP server (Authentication → SMTP in the dashboard).
+enable_confirmations = false

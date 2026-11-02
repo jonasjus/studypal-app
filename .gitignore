@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+*.db
+.DS_Store
+*.spec
+
+# Supabase CLI cache and the local database password
+supabase/.temp/
+supabase/.branches/
+supabase/.db-password
+.ruff_cache/

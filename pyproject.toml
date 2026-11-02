@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "studypal"
+version = "0.1.0"
+description = "StudyPal: a calm study tracker for exam season, as a regular desktop app"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pywebview>=6.2",
+    "certifi>=2025.1",
+    "desktop-notifier>=6.2; sys_platform != 'darwin'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1", "pyinstaller>=6.16", "pillow>=11"]  # pillow: turns icon.png into a Windows .ico
+
+[project.gui-scripts]
+studypal = "studypal.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/studypal"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
