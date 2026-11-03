@@ -1,0 +1,72 @@
+# Builds the Mac app on GitHub's macOS 15 (Sequoia) machines: one for Intel Macs and one for Apple Silicon
+# (M1 and newer), since an app only runs on the kind of processor it was built for. Each runs the tests,
+# builds the app, and opens it on Sequoia to check it works. Runs on every push to main, and by hand from
+# the Actions tab (Run workflow). The zips are attached to the run as "StudyPal-mac-intel" and
+# "StudyPal-mac-apple-silicon".
+name: Mac build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            kind: intel
+            arch: x86_64
+          - runner: macos-15
+            kind: apple-silicon
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]"
+
+      - name: Tests
+        run: .venv/bin/python -m pytest -q
+
+      - name: Build
+        run: sh packaging/build-mac.sh
+
+      - name: Check what it runs on
+        run: |
+          sw_vers
+          archs=$(lipo -archs dist/StudyPal.app/Contents/MacOS/StudyPal)
+          echo "processor: $archs"
+          echo "needs macOS $(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' dist/StudyPal.app/Contents/Info.plist) or newer"
+          case " $archs " in *" ${{ matrix.arch }} "*) ;; *) echo "built for the wrong processor"; exit 1 ;; esac
+          codesign --verify --deep --strict dist/StudyPal.app
+
+      # Opens the built app with sample data on Sequoia and checks the page loads and reaches Python.
+      - name: Smoke test
+        timeout-minutes: 3
+        run: |
+          export STUDYPAL_SMOKE_OUT="$PWD/smoke.txt" STUDYPAL_NOTIFIER=print STUDYPAL_SOUND=print
+          dist/StudyPal.app/Contents/MacOS/StudyPal --demo --smoke-test &
+          pid=$!
+          for _ in $(seq 120); do kill -0 $pid 2>/dev/null || break; sleep 1; done
+          kill $pid 2>/dev/null || true
+          if [ ! -f smoke.txt ]; then echo "no result"; exit 1; fi
+          cat smoke.txt
+          grep -q "maths on, research on, pages on" smoke.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StudyPal-mac-${{ matrix.kind }}
+          path: dist/StudyPal-mac.zip
+          retention-days: 30

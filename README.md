@@ -184,22 +184,34 @@ grey nothing reads well on. Its colours are checked to stay readable at every po
 
 ### Mac
 
+An app only runs on the kind of processor it was built for, so there are two Mac builds. GitHub makes both:
+every push to `main` runs `.github/workflows/mac.yml` on macOS 15 (Sequoia) machines, one Intel and one Apple
+Silicon. Each runs the tests, builds the app, opens it on Sequoia to check it works, and attaches
+`StudyPal-mac-intel` or `StudyPal-mac-apple-silicon` to the run (kept for 30 days). To build without pushing,
+go to Actions → Mac build → **Run workflow**. To find out which one a Mac needs:  → About This Mac shows a
+**Chip** (Apple M1 or newer: Apple Silicon) or a **Processor** (Intel).
+
+To build on this Mac instead (for this Mac's kind of processor):
+
 ```sh
 sh packaging/build-mac.sh        # makes dist/StudyPal-mac.zip
 ```
 
-Send them `dist/StudyPal-mac.zip`. They unzip it and drag **StudyPal** into Applications.
+The build records the oldest macOS the app runs on (macOS 15 for these builds), so an older Mac says so
+plainly, and signs the app again at the end (ad hoc), since changing its Info.plist breaks PyInstaller's
+signature and macOS calls an app with a broken signature "damaged".
+
+Send them the zip. They unzip it and drag **StudyPal** into Applications.
 
 The app isn't signed with an Apple developer certificate, so the first time it's opened macOS
-says it can't check it for malware. To open it anyway:
+says it can't check it for malware. On Sequoia, right-click → Open no longer gets past this. To open it anyway:
 
 1. Double-click StudyPal and close the warning.
 2. Open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to
    the StudyPal message.
-3. Confirm with **Open**. After this it opens normally.
+3. Confirm with **Open** (and your password). After this it opens normally.
 
-The build runs on the same kind of Mac it was built on. Built on Apple Silicon (M1 or newer),
-it won't run on an older Intel Mac. To support one, build on an Intel Mac.
+Or in Terminal: `xattr -dr com.apple.quarantine /Applications/StudyPal.app`.
 
 ### Windows
 
