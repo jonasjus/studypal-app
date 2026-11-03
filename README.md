@@ -12,10 +12,10 @@ and logic, so the two behave the same. They don't share a database.
 |---|---|---|
 | Data | `~/.local/share/study/study.db` | macOS: `~/Library/Application Support/StudyPal/studypal.db`<br>Windows: `%APPDATA%\StudyPal\studypal.db` |
 | Settings | `config.toml` | Settings dialog (gear icon), stored in the database |
-| Notifications | `study notify` on a schedule | While the window is open |
+| Notifications | `study notify` on a schedule | While the app is open, also in the background, with a pling when a Pomodoro phase ends |
 | Sync between computers | git (`study sync`) | Optional account, synced through Supabase |
 | CLI | yes | no |
-| Past exams, practice exams with Gemini | no | yes |
+| Past exams, practice exams with Groq | no | yes |
 | Research projects | no | yes |
 
 ## Accounts and the cloud
@@ -90,28 +90,33 @@ Each subject has an **Exams** page (button on the subject page).
 
 - **Past exams.** Add the exam paper (PDF or photos). If you have them, also add the solutions and
   your own answers, graded if possible. Click a file to open it in Preview.
-- **Read questions.** Gemini lists the exam's questions, transcribed with their maths and linked to
+- **Read questions.** Groq lists the exam's questions, transcribed with their maths and linked to
   the subject's topics. It adds the answers from the solutions, or writes a short one itself when
   there are no solutions (the page says which). Given your own answers, it also marks how each
-  question went and notes what went wrong.
+  question went and notes what went wrong. Groq can't read PDFs, so StudyPal draws each page as an
+  image and sends three pages at a time (Groq's limit), in stages: the paper's questions, then the
+  solutions, then your answers, joined up by question number (a question running over a page break
+  is joined too).
 - **Marking.** Each question can be marked **Got it**, **Partly** or **Missed**, with a note on what
-  went wrong. You can mark them yourself, also without Gemini, and add questions by hand.
+  went wrong. You can mark them yourself, also without Groq, and add questions by hand.
   **What to practise** totals these by topic. A question that went badly can become a weak spot.
-- **Practice exams.** Gemini writes a new exam (short, half or full length) in the style of the past
-  papers and solutions. It aims at what went badly: the missed and partly right questions with their
+- **Practice exams.** Groq writes a new exam (short, half or full length) in the style of the past
+  exams, from the questions and solutions read from them (so read a past exam before it can be used). It aims at what went badly: the missed and partly right questions with their
   notes, open weak spots, and topics with low confidence. You can also cover the course like the real
   exam does, or pick topics. It's told about earlier practice questions so it doesn't repeat them.
   Each question says what it practises. Solutions are folded away until you open them. You mark
   practice questions the same way, so they feed into the next practice exam. **Print…** saves the
   exam as a web page, with the solutions on a separate page, and opens it in the browser.
 
-Gemini needs an API key: free from [Google AI Studio](https://aistudio.google.com/apikey), pasted under
+Groq needs an API key: free from the [Groq console](https://console.groq.com/keys), pasted under
 Settings (the gear icon). Like the theme, it's kept in `prefs.json` on that computer only (readable
-only by the user) and isn't synced. `GEMINI_API_KEY` in the environment works too. The default
-model is `gemini-3.8-flash`; Settings can switch to `gemini-4-argon` for hard maths. If a model is
-retired, StudyPal falls back to `gemini-flash-latest`. Exam files are sent to Google whenever
-Gemini reads or writes an exam. Each request carries up to 45 MB of files (Gemini takes 50 MB), newest
-exams first.
+only by the user) and isn't synced. `GROQ_API_KEY` in the environment works too. Exams are read by
+`qwen/qwen3.8-27b`, Groq's one model that takes images (a preview model, so Groq may replace it).
+Practice exams and answers are written by `openai/gpt-oss-120b` by default; Settings can switch to
+`gpt-oss-20b` or Qwen. Answers come back as strict structured JSON. On the free plan, hitting the
+per-minute limit makes StudyPal wait as long as Groq says and carry on; the daily limit says so.
+Exam pages are sent to Groq whenever it reads an exam; up to 40 pages per file. Photos are shrunk to
+JPEG first, and iPhone photos (HEIC) are converted on a Mac (elsewhere, save them as JPG).
 
 ## Research
 
@@ -205,9 +210,10 @@ Edge WebView2, which comes with Windows 10 and 11.
 - `src/studypal/core/cloud.py`: accounts (Supabase Auth) and syncing with the `study_rows` table and
   the exam-files bucket, using only the standard library for HTTP. `core/dataset.py` turns the
   database into rows and back.
-- `src/studypal/core/gemini.py`: the Gemini API (`generateContent` with JSON output). The prompts
-  and the summary of what went badly are in `core/logic/exams.py`, and the exam files folder is
-  handled by `core/files.py`.
+- `src/studypal/core/groq.py`: the Groq API (OpenAI-style chat completions with strict JSON output).
+  `core/pages.py` draws PDF pages and shrinks photos ([pypdfium2](https://github.com/pypdfium2-team/pypdfium2)
+  and Pillow). The prompts, the joining up of pages and the summary of what went badly are in
+  `core/logic/exams.py`, and the exam files folder is handled by `core/files.py`.
 - `supabase/`: the cloud table, its security rules and auth settings.
 - `src/studypal/api.py`: everything the window can ask for. Each public method takes and returns
   plain JSON, and problems come back as `{"error": "..."}` for the window to show.
@@ -215,6 +221,8 @@ Edge WebView2, which comes with Windows 10 and 11.
   is the Exams page, `research.js` the research projects (their card, page and note saving). `vendor/` holds [marked](https://marked.js.org/) 15.0.12 and
   [KaTeX](https://katex.org/) 0.16.22 (woff2 fonts only), for questions written in Markdown with
   maths, so they work offline.
+- `src/studypal/core/sound.py`: the Pomodoro's pling, made as a WAV and played by the system (so it's heard
+  with the window in the background), and keeping macOS from napping the app while a Pomodoro runs.
 - `src/studypal/app.py`: opens the window with [pywebview](https://pywebview.flowrl.com/), which
   uses the system's own web view (WebKit on macOS, Edge WebView2 on Windows).
 
@@ -237,7 +245,7 @@ To check a fresh build works end to end (page loads, reaches Python, draws the o
 
 ```sh
 STUDYPAL_NOTIFIER=print dist/StudyPal.app/Contents/MacOS/StudyPal --demo --smoke-test
-# smoke test: 4 subjects, 1 research, 13 list rows, accounts off, maths on, research on   (demo mode never has accounts)
+# smoke test: 4 subjects, 1 research, 13 list rows, accounts off, maths on, research on, pages on   (demo mode never has accounts)
 ```
 
 The app icon is `packaging/icon.svg`. `icon.png` and `StudyPal.icns` are made from it.

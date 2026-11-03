@@ -1195,6 +1195,20 @@ class Store:
             raise StorageError("No Pomodoro is running.")
         return run, sessions
 
+    def pomodoro_break(self, now: datetime | None = None,
+                       settings: PomodoroSettings = PomodoroSettings()) -> tuple[PomodoroRun, list[Session]]:
+        """End the focus block (logging it, extra minutes included) and start the break."""
+        now = now or datetime.now()
+        with self._tx() as c:
+            run = self.get_pomodoro()
+            if run is None:
+                raise StorageError("No Pomodoro is running.")
+            if run.phase is not PomoPhase.FOCUS:
+                return run, []
+            run, blocks = pomo.take_break(run, now, settings)
+            self._write_pomodoro(c, run)
+            return run, self._log_blocks(c, run, blocks)
+
     def pause_pomodoro(self, now: datetime | None = None,
                        settings: PomodoroSettings = PomodoroSettings()) -> tuple[PomodoroRun, list[Session]]:
         now = now or datetime.now()
@@ -1592,7 +1606,7 @@ class Store:
         return cur.lastrowid  # type: ignore[return-value]
 
     def replace_questions(self, exam_id: int, questions: list[ExamQuestion]) -> None:
-        """Swap an exam's questions for a new list (after Gemini has read it again)."""
+        """Swap an exam's questions for a new list (after Groq has read it again)."""
         with self._tx() as c:
             c.execute("delete from exam_question where exam_id = ?", (exam_id,))
             for q in questions:

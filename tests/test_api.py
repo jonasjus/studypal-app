@@ -14,8 +14,11 @@ from studypal.core.demo import seed
 @pytest.fixture
 def api(tmp_path):
     sent: list[tuple[str, str]] = []
-    a = Api(tmp_path / "studypal.db", notify=lambda title, body: sent.append((title, body)) or True)
+    played: list[str] = []
+    a = Api(tmp_path / "studypal.db", notify=lambda title, body: sent.append((title, body)) or True,
+            play=played.append)
     a.sent = sent  # type: ignore[attr-defined]
+    a.played = played  # type: ignore[attr-defined]
     yield a
     a._close()
 
@@ -136,19 +139,61 @@ def test_stopping_a_pomodoro_straight_away(api: Api) -> None:
     assert "under a minute" in api.pomo_stop()["message"]
 
 
-def test_pomodoro_phase_change_notifies(api: Api) -> None:
+def _focus_started(api: Api, minutes_ago: float) -> None:
+    ago = (datetime.now() - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
+    api._store.conn.execute("update pomodoro_run set phase_started_at = ?, block_started_at = ?", (ago, ago))
+
+
+def test_focus_time_up_plings_and_waits_for_you(api: Api) -> None:
     cid = add_course(api)
     api.pomo_start(cid, None)
     r = api.overview()["running"]
-    assert r["kind"] == "pomodoro" and r["phase"] == "focus" and r["remaining_seconds"] > 24 * 60
-    # Pretend the focus block started 26 minutes ago.
-    ago = (datetime.now() - timedelta(minutes=26)).isoformat(timespec="seconds")
-    api._store.conn.execute("update pomodoro_run set phase_started_at = ?, block_started_at = ?", (ago, ago))
+    assert r["kind"] == "pomodoro" and r["phase"] == "focus" and r["remaining_seconds"] > 24 * 60 and not r["focus_done"]
+    _focus_started(api, 26)  # time was up a minute ago
     t = api.tick()
-    assert any("break" in m for m in t["messages"]) and any("25 minutes" in m for m in t["messages"])
-    assert ("Time for a short break", "Focus block 1 done.") in api.sent  # type: ignore[attr-defined]
-    assert api.overview()["running"]["phase"] == "short_break"
+    assert any("Time for a break" in m for m in t["messages"])
+    assert api.played == ["focus_done"]  # type: ignore[attr-defined]
+    assert api.sent[-1][0] == "Time for a break"  # type: ignore[attr-defined]
+    api.tick()
+    assert api.played == ["focus_done"]  # once, not on every tick  # type: ignore[attr-defined]
+    # No break yet: still focus, counting the extra minute, nothing logged.
+    r = api.overview()["running"]
+    assert r["phase"] == "focus" and r["focus_done"] and 55 <= r["overtime_seconds"] <= 65
+    assert api.subject(cid)["total"] == "0m"
+    msg = api.pomo_break()["message"]
+    assert msg == "Saved 26m of focus. Enjoy your 5-minute break."
+    assert api.overview()["running"]["phase"] == "short_break" and api.subject(cid)["total"] == "26m"
+    assert api.played == ["focus_done"]  # taking the break yourself makes no sound  # type: ignore[attr-defined]
     assert api.pomo_stop()["message"] == "Pomodoro stopped. Your focus time is saved."
+
+
+def test_pling_when_a_break_is_over_and_it_can_be_turned_off(api: Api) -> None:
+    cid = add_course(api)
+    api.pomo_start(cid, None)
+    api.pomo_break()
+    ago = (datetime.now() - timedelta(minutes=6)).isoformat(timespec="seconds")
+    api._store.conn.execute("update pomodoro_run set phase_started_at = ?", (ago,))
+    api.tick()
+    assert api.played == ["break_over"]  # type: ignore[attr-defined]
+    api.pomo_next()
+    assert api.save_settings({"sound": 0}) == {"ok": True}
+    _focus_started(api, 26)
+    assert api.tick()["messages"] and api.played == ["break_over"]  # type: ignore[attr-defined]
+    assert api.get_settings()["sound"] == 0
+
+
+def test_background_check_plings_without_the_window(api: Api) -> None:
+    """The watcher thread's check plings and notifies by itself; the window's next tick shows the messages."""
+    cid = add_course(api)
+    api.pomo_start(cid, None)
+    api.tick()
+    _focus_started(api, 26)
+    with api._lock:
+        api._check_pomodoro(datetime.now().replace(microsecond=0))
+    assert api.played == ["focus_done"] and api.sent  # type: ignore[attr-defined]
+    t = api.tick()
+    assert t["changed"] and any("Time for a break" in m for m in t["messages"])
+    assert api.played == ["focus_done"] and api.tick()["messages"] == []  # type: ignore[attr-defined]
 
 
 def test_notifications_can_be_turned_off(api: Api) -> None:
@@ -306,3 +351,11 @@ def test_theme_is_kept_for_the_computer(tmp_path) -> None:
     again = Api(tmp_path / "studypal.db", notify=lambda t, b: True)
     assert again.get_theme() == "nord" and again._prefs()["background"] == "#2e3440"
     again._close()
+
+
+def test_the_pling_is_a_short_fading_sound() -> None:
+    from studypal.core import sound
+
+    one, two = sound.samples(sound.FOCUS_DONE), sound.samples(sound.BREAK_OVER)
+    assert 0.2 < max(abs(x) for x in one) < 0.6 and len(two) > len(one)
+    assert max(abs(x) for x in one[-500:]) < 0.01  # faded out by the end

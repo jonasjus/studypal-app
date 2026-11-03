@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import replace
@@ -26,12 +27,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .core import alerts, cloud, files, notifier
+from .core import alerts, cloud, files, notifier, sound
 from .core.files import FileError
-from .core.gemini import DEFAULT_MODEL, KEY_URL, Gemini, GeminiError
-from .core.gemini import MAX_UPLOAD as GEMINI_MAX_UPLOAD
-from .core.gemini import MODELS as GEMINI_MODELS
-from .core.gemini import File as GeminiFile
+from .core import pages
+from .core.groq import DEFAULT_MODEL, IMAGES_PER_REQUEST, KEY_URL, VISION_MODEL, Groq, GroqError
+from .core.groq import MODELS as GROQ_MODELS
+from .core.groq import Image as GroqImage
+from .core.pages import PageError
 from .core.logic import exams as exam_logic
 from .core.cloud import Accounts, Client, CloudError, Offline, SignedOut
 from .core.config import DEFAULT_THRESHOLDS, Config
@@ -41,7 +43,7 @@ from .core.logic.cite import KINDS, apa
 from .core.logic.countdown import Urgency, countdown, describe_days, urgency
 from .core.logic.dates import DateParseError
 from .core.logic.notify import banner_groups
-from .core.logic.pomodoro import PomodoroRun, PomodoroSettings, phase_length, remaining
+from .core.logic.pomodoro import PomodoroRun, PomodoroSettings, focus_done, overtime, phase_length, remaining
 from .core.logic.reading import ReadingParseError, ReadingProgress, parse_section_ranges, parse_toc
 from .core.logic.stats import days_since, format_minutes, is_stale, minutes_per_day, week_range
 from .core.logic.timeline import CramProgress, Phase, cram_progress
@@ -86,6 +88,7 @@ SETTINGS: dict[str, tuple[int, int, int]] = {
     "week_start": (0, 0, 6),
     "stale_after_days": (7, 1, 90),
     "notifications": (1, 0, 1),
+    "sound": (1, 0, 1),  # a pling when a Pomodoro focus block or break ends
 }
 
 
@@ -404,7 +407,8 @@ class Api:
     gets its own database next to it (accounts/<user id>/studypal.db), synced with the cloud."""
 
     def __init__(self, db_path: Path | str, notify: Callable[[str, str], bool] = notifier.send,
-                 client: Client | None = None, account_file: Path | None = None) -> None:
+                 client: Client | None = None, account_file: Path | None = None,
+                 play: Callable[[str], None] = sound.play) -> None:
         self._lock = threading.RLock()  # one caller at a time on the database
         self._sync_lock = threading.Lock()  # one sync (or sign-in/out) at a time
         self._local_path = Path(db_path)
@@ -414,7 +418,13 @@ class Api:
         self._sync: dict[str, Any] = {"status": "idle", "message": "", "at": None}
         self._notify = notify
         self._window = None  # set by the app once the window exists (for the save dialog)
-        self._last_pomo_phase: tuple[str, int] | None = None
+        self._last_pomo_phase: tuple[str, int, bool] | None = None
+        self._play = play
+        self._pending: list[str] = []  # messages from the background check, for the window's next tick
+        self._pending_changed = False
+        self._awake = sound.KeepAwake()
+        # Groq jobs running in the background ("read:<exam id>", "make:<course id>") -> what they're doing now.
+        self._jobs: dict[str, str] = {}
         self._greeting = self._pick_greeting()
 
     def _pick_greeting(self) -> str:
@@ -713,7 +723,7 @@ class Api:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(prefs), encoding="utf-8")
-        os.chmod(tmp, 0o600)  # it can hold the Gemini key
+        os.chmod(tmp, 0o600)  # it can hold the Groq key
         tmp.replace(path)
 
     @action
@@ -768,7 +778,8 @@ class Api:
                 **self._running_label(run.course_id, run.project_id, codes),
                 "topic": topics.get(run.topic_id) if run.topic_id else None,
                 "phase": run.phase.value, "phase_label": run.phase.label, "paused": run.paused,
-                "completed": run.completed,
+                "completed": run.completed, "focus_done": focus_done(run, now, settings),
+                "overtime_seconds": int(overtime(run, now, settings).total_seconds()),
                 "remaining_seconds": int(left.total_seconds()) if left is not None else None,
                 "length_seconds": int(length.total_seconds()) if length is not None else None}
 
@@ -879,28 +890,67 @@ class Api:
         return [{**_course(c), "topics": [{"id": t.id, "title": t.title} for t in self._store.list_topics(c.id)]}
                 for c in self._store.list_courses()]
 
-    @action
-    def tick(self) -> dict:
-        """Called every few seconds while the window is open: logs finished Pomodoro blocks, and sends the
-        deadline alerts and end-of-phase alerts that are due. Returns messages to show in the window."""
-        now = datetime.now().replace(microsecond=0)
-        messages: list[str] = []
-        run, logged = self._store.settle_pomodoro(now, self._pomodoro_settings())
-        phase = (run.phase.value, run.completed) if run else None
-        if run and self._last_pomo_phase and phase != self._last_pomo_phase:
-            title = {"focus": "Back to work", "short_break": "Time for a short break",
-                     "long_break": "Time for a long break", "ready": "Break's over"}[run.phase.value]
-            body = ("Press Start focus when you're ready." if run.phase.value == "ready"
-                    else f"Focus block {run.completed} done." if run.phase.is_break else "")
-            messages.append(f"{title}. {body}".strip())
+    def _check_pomodoro(self, now: datetime) -> None:
+        """Log finished focus blocks and, when a phase has ended since the last look, pling and send its
+        notification. Runs every second on its own thread (see `watch`), so this happens on time even
+        while the window is in the background; the window's tick also calls it. Call with the lock held."""
+        settings = self._pomodoro_settings()
+        run, logged = self._store.settle_pomodoro(now, settings)
+        phase = self._phase_key(run, now)
+        # Only the two things that happen by themselves: focus time running out, and a break ending.
+        if run and self._last_pomo_phase and phase != self._last_pomo_phase and (phase[2] or run.phase.value == "ready"):
+            if run.phase.value == "ready":
+                title, body, kind = "Break's over", "Press Start focus when you're ready.", sound.BREAK_OVER
+            else:
+                title, body, kind = ("Time for a break", f"Focus block {run.completed + 1} done. Keep going, or take "
+                                     "a break when you're ready.", sound.FOCUS_DONE)
+            self._pending.append(f"{title}. {body}")
+            if self._setting("sound"):
+                self._play(kind)
             if self._setting("notifications"):
-                self._notify(title, body or "StudyPal")
+                self._notify(title, body)
         self._last_pomo_phase = phase
         if logged:
-            messages.append(f"Logged {sum(s.minutes for s in logged)} minutes of focus.")
+            self._pending.append(f"Logged {sum(s.minutes for s in logged)} minutes of focus.")
+            self._pending_changed = True
+        self._awake.set(run is not None)
+
+    def _phase_key(self, run: PomodoroRun | None, now: datetime) -> tuple[str, int, bool] | None:
+        """What the Pomodoro is doing, to notice when it changes: (phase, blocks done, focus time up)."""
+        if run is None:
+            return None
+        return run.phase.value, run.completed, focus_done(run, now, self._pomodoro_settings())
+
+    def watch(self) -> None:
+        """Start checking the Pomodoro every second in the background, for as long as the app runs."""
+        def loop() -> None:
+            while True:
+                time.sleep(1)
+                with self._lock:
+                    try:
+                        self._check_pomodoro(datetime.now().replace(microsecond=0))
+                    except Exception:  # a closed or switching database: try again in a second
+                        pass
+
+        threading.Thread(target=loop, name="pomodoro-watch", daemon=True).start()
+
+    @action
+    def tick(self) -> dict:
+        """Called every few seconds while the window is open: catches up on the Pomodoro and sends the
+        deadline alerts that are due. Returns messages to show in the window, including ones from the
+        background check since the last tick."""
+        now = datetime.now().replace(microsecond=0)
+        self._check_pomodoro(now)
         if self._setting("notifications"):
             alerts.send_due(self._store, self._config(), now, send=self._notify)
-        return {"messages": messages, "changed": bool(logged) or bool(messages)}
+        messages, changed = self._pending, self._pending_changed
+        self._pending, self._pending_changed = [], False
+        return {"messages": messages, "changed": changed or bool(messages)}
+
+    @action
+    def preview_sound(self) -> None:
+        """Play the pling, so Settings can show what it sounds like."""
+        self._play(sound.FOCUS_DONE)
 
     # ---------- subjects ----------
 
@@ -1091,7 +1141,7 @@ class Api:
     @action
     def pomo_start(self, course_id: int | None, topic_id: int | None = None, project_id: int | None = None) -> None:
         self._store.start_pomodoro(course_id, topic_id, project_id=project_id)
-        self._last_pomo_phase = ("focus", 0)
+        self._last_pomo_phase = ("focus", 0, False)
 
     @action
     def pomo_pause(self) -> None:
@@ -1104,7 +1154,18 @@ class Api:
     @action
     def pomo_next(self) -> None:
         run, _ = self._store.pomodoro_next(settings=self._pomodoro_settings())
-        self._last_pomo_phase = (run.phase.value, run.completed)
+        self._last_pomo_phase = self._phase_key(run, datetime.now())
+
+    @action
+    def pomo_break(self) -> dict:
+        """You're done with this focus block: log it (extra minutes included) and start the break."""
+        run, sessions = self._store.pomodoro_break(settings=self._pomodoro_settings())
+        self._last_pomo_phase = self._phase_key(run, datetime.now())
+        minutes = sum(s.minutes for s in sessions)
+        length = {"short_break": self._setting("short_break_minutes"), "long_break": self._setting("long_break_minutes")}
+        rest = f"{length.get(run.phase.value, 0)}-minute break" if run.phase.is_break else "break"
+        return {"ok": True, "message": f"Saved {format_minutes(minutes)} of focus. Enjoy your {rest}." if minutes
+                else f"Enjoy your {rest}."}
 
     @action
     def pomo_stop(self) -> dict:
@@ -1280,7 +1341,7 @@ class Api:
                       for t in tallies],
             "weak_open": len(self._store.list_weak_spots(course_id)),
             "shaky_topics": [t.title for t in topic_list if t.confidence <= 2],
-            "gemini": bool(self._gemini_key()),
+            "ai": bool(self._groq_key()),
         }
 
     @action
@@ -1416,50 +1477,64 @@ class Api:
                                            description=f"{exam.title}, question {q.number}: {what}"))
         return {"ok": True, "message": "Added to weak spots."}
 
-    # Gemini: the API key belongs to the computer (prefs.json), like the theme, and isn't synced.
+    # Groq: the API key belongs to the computer (prefs.json), like the theme, and isn't synced.
 
-    def _gemini_key(self) -> str:
-        return str(self._prefs().get("gemini_key") or os.environ.get("GEMINI_API_KEY") or "").strip()
+    def _groq_key(self) -> str:
+        return str(self._prefs().get("groq_key") or os.environ.get("GROQ_API_KEY") or "").strip()
 
-    def _gemini(self) -> Gemini:
-        key = self._gemini_key()
+    def _groq(self) -> Groq:
+        key = self._groq_key()
         if not key:
-            raise UserError("Add your Gemini API key in Settings first.")
-        return Gemini(key, str(self._prefs().get("gemini_model") or DEFAULT_MODEL))
+            raise UserError("Add your Groq API key in Settings first.")
+        return Groq(key, str(self._prefs().get("groq_model") or DEFAULT_MODEL))
 
     @action
-    def gemini_settings(self) -> dict:
-        key = self._gemini_key()
+    def ai_settings(self) -> dict:
+        key = self._groq_key()
         return {"has_key": bool(key), "key_hint": f"…{key[-4:]}" if len(key) > 8 else "",
-                "model": str(self._prefs().get("gemini_model") or DEFAULT_MODEL),
-                "models": [list(m) for m in GEMINI_MODELS], "key_url": KEY_URL}
+                "model": str(self._prefs().get("groq_model") or DEFAULT_MODEL),
+                "models": [list(m) for m in GROQ_MODELS], "key_url": KEY_URL}
 
     @action
-    def save_gemini(self, data: dict) -> None:
+    def save_ai(self, data: dict) -> None:
         prefs = self._prefs()
+        prefs.pop("gemini_key", None)  # from before StudyPal used Groq
+        prefs.pop("gemini_model", None)
         key = _text(data, "key")
         if data.get("forget"):
-            prefs.pop("gemini_key", None)
+            prefs.pop("groq_key", None)
         elif key:
-            if not re.fullmatch(r"[A-Za-z0-9_\-.]{20,200}", key):
-                raise UserError("That doesn't look like a Gemini API key. Copy the whole key from Google AI Studio.")
-            prefs["gemini_key"] = key
+            if not re.fullmatch(r"gsk_[A-Za-z0-9]{20,200}", key):
+                raise UserError("That doesn't look like a Groq API key (they start with gsk_). Copy the whole key "
+                                "from the Groq console.")
+            prefs["groq_key"] = key
         model = _text(data, "model")
         if model:
-            if not re.fullmatch(r"[a-z0-9.\-]{3,60}", model):
-                raise UserError("That isn't a Gemini model.")
-            prefs["gemini_model"] = model
+            if not re.fullmatch(r"[a-z0-9./\-]{3,80}", model):
+                raise UserError("That isn't a Groq model.")
+            prefs["groq_model"] = model
         self._write_prefs(prefs)
 
-    def _gemini_call(self, work: Callable[[], dict]) -> dict:
-        """Run a Gemini job: like @action, but the lock is only held for the database parts inside `work`,
-        not while Gemini thinks (that takes up to a few minutes, and the window must keep working)."""
+    def _ai_call(self, job: str, work: Callable[[], dict]) -> dict:
+        """Run a Groq job in the background: like @action, but the lock is only held for the database parts
+        inside `work`, not while Groq works (reading an exam takes a request per few pages), so the window
+        keeps working. `ai_jobs` tells the window how far it's got."""
+        if job in self._jobs:
+            return {"error": "Groq is already on it. Wait for it to finish."}
+        self._jobs[job] = "Starting…"
         try:
             return work()
-        except (GeminiError, UserError, StorageError, FileError, CloudError) as e:
+        except (GroqError, PageError, UserError, StorageError, FileError, CloudError) as e:
             return {"error": str(e)}
         except Exception as e:  # a bug: say so instead of leaving the page waiting
             return {"error": f"Something went wrong: {e}"}
+        finally:
+            self._jobs.pop(job, None)
+
+    def ai_jobs(self) -> dict:
+        """The Groq jobs running now, with what each is doing ("Reading pages 4–6 of 8"). No lock: it's
+        asked every second while a job runs, and must answer even while a sync holds the database."""
+        return dict(self._jobs)
 
     @staticmethod
     def _topic_by_title(topics: list[Topic], title: str) -> int | None:
@@ -1471,15 +1546,26 @@ class Api:
                 return t.id
         return None
 
-    def _load(self, store: Store, f: ExamFile) -> GeminiFile:
+    def _read_bytes(self, store: Store, f: ExamFile) -> bytes:
         path = files.path(self._files_dir(store), f.key)
         if not path.exists():
             raise UserError(f"“{f.name}” hasn't arrived on this computer yet. Wait for StudyPal to sync, then try again.")
-        return GeminiFile(f.name, f.mime, path.read_bytes())
+        return path.read_bytes()
+
+    @staticmethod
+    def _batches(f: ExamFile, data: bytes) -> list[tuple[list[GroqImage], int, int, int, str]]:
+        """A file as what Groq reads in one request each: (page images, first page, last page, pages, text)."""
+        images, text = pages.split(f.name, f.mime, data)
+        if text:
+            return [([], 1, 1, 1, text[:60_000])]
+        n = IMAGES_PER_REQUEST
+        return [([GroqImage(f.name, img) for img in images[i:i + n]], i + 1, min(i + n, len(images)), len(images), "")
+                for i in range(0, len(images), n)]
 
     def read_exam(self, exam_id: int) -> dict:
-        """Gemini reads a past exam's files and lists its questions, with answers, topics and (when your own
-        answers are added) how each one went. Replaces the questions listed before."""
+        """Groq reads a past exam's files a few pages at a time and lists its questions, with answers (from the
+        solutions if there are any), topics and, when your own answers are added, how each one went. Replaces
+        the questions listed before."""
         def work() -> dict:
             with self._lock:
                 store = self._store
@@ -1488,41 +1574,84 @@ class Api:
                     raise UserError("That exam no longer exists.")
                 course = store.get_course(exam.course_id)
                 topics = store.list_topics(exam.course_id)
-                order = {"exam": 0, "solution": 1, "attempt": 2}
-                exam_files = sorted(store.list_exam_files(exam_id), key=lambda f: order.get(f.role, 3))
+                exam_files = store.list_exam_files(exam_id)
                 if not any(f.role == "exam" for f in exam_files):
                     raise UserError("Add the exam paper itself first (a PDF or photos).")
-                loaded = [self._load(store, f) for f in exam_files]
-            if sum(len(f.data) for f in loaded) > GEMINI_MAX_UPLOAD:
-                raise UserError("These files are too big to send to Gemini together. Use smaller scans.")
-            prompt = exam_logic.read_prompt(course, topics, [(f.role, f.name) for f in exam_files])  # type: ignore[arg-type]
-            answer = self._gemini().ask([*loaded, prompt], exam_logic.READ_SCHEMA, system=exam_logic.SYSTEM, temperature=0.2)
-            # How each question went can only come from your own answers.
-            attempt = any(f.role == "attempt" for f in exam_files)
+                loaded = {f.id: self._read_bytes(store, f) for f in exam_files}
+            groq = self._groq()
+            by_role = {role: [f for f in exam_files if f.role == role] for role in FILE_ROLES}
+            system, L = exam_logic.SYSTEM, exam_logic
+            job = f"read:{exam_id}"
+
+            def step(what: str, first: int, last: int, total: int, text: str) -> None:
+                where = "" if text else f", page {first} of {total}" if first == last else f", pages {first}–{last} of {total}"
+                self._jobs[job] = f"{what}{where}"
+
+            self._jobs[job] = "Drawing the pages…"
+
+            # 1. The questions, off the exam paper's pages.
+            found: list[dict] = []
+            for f in by_role["exam"]:
+                for images, first, last, total, text in self._batches(f, loaded[f.id]):  # type: ignore[index]
+                    step("Reading the questions", first, last, total, text)
+                    prompt = L.pages_prompt(course, topics, f.name, first, last, total, found, text)  # type: ignore[arg-type]
+                    answer = groq.ask([*images, prompt], L.PAGES_SCHEMA, system, 0.1, model=VISION_MODEL)
+                    L.merge_questions(found, [q for q in answer.get("questions") or [] if isinstance(q, dict)])
+            found = [q for q in found if q["prompt"]]
+            if not found:
+                raise UserError("Groq didn't find any questions in the exam. Is the right file marked as the exam?")
+            for q in found:
+                q.update(answer="", result="", note="")
+
+            # 2. The answers: from the solutions, or written for you.
+            if by_role["solution"]:
+                for f in by_role["solution"]:
+                    for images, first, last, total, text in self._batches(f, loaded[f.id]):  # type: ignore[index]
+                        step("Reading the solutions", first, last, total, text)
+                        prompt = L.answers_prompt(course, found, f.name, first, last, total, text)  # type: ignore[arg-type]
+                        answer = groq.ask([*images, prompt], L.ANSWERS_SCHEMA, system, 0.1, model=VISION_MODEL)
+                        L.merge_field(found, [a for a in answer.get("answers") or [] if isinstance(a, dict)], "answer")
+            else:
+                self._jobs[job] = "Writing answers (there are no solutions)"
+                answer = groq.ask([L.write_answers_prompt(course, topics, found)], L.ANSWERS_SCHEMA, system, 0.2)  # type: ignore[arg-type]
+                L.merge_field(found, [a for a in answer.get("answers") or [] if isinstance(a, dict)], "answer")
+
+            # 3. How each question went, from your own answers (only from them: never guessed).
+            score = ""
+            for f in by_role["attempt"]:
+                for images, first, last, total, text in self._batches(f, loaded[f.id]):  # type: ignore[index]
+                    step("Marking your answers", first, last, total, text)
+                    prompt = L.marks_prompt(course, found, f.name, first, last, total, text)  # type: ignore[arg-type]
+                    answer = groq.ask([*images, prompt], L.MARKS_SCHEMA, system, 0.1, model=VISION_MODEL)
+                    results = [r for r in answer.get("results") or [] if isinstance(r, dict)]
+                    by = {L.number_key(q["number"]): q for q in found}
+                    for r in results:
+                        q = by.get(L.number_key(str(r.get("number") or "")))
+                        if q is not None and r.get("result") in RESULTS:
+                            q["result"] = r["result"]
+                    L.merge_field(found, results, "note")
+                    score = score or str(answer.get("score") or "").strip()[:30]
+
             questions = [ExamQuestion(
-                exam_id=exam_id, number=str(q.get("number") or "").strip()[:20], prompt=str(q.get("prompt") or ""),
-                answer=str(q.get("answer") or ""), marks=str(q.get("marks") or "").strip()[:20],
-                topic_id=self._topic_by_title(topics, str(q.get("topic") or "")),
-                result=q.get("result") if attempt and q.get("result") in RESULTS else "",
-                note=str(q.get("note") or "") if attempt else "",
-            ) for q in answer.get("questions") or [] if isinstance(q, dict)]
-            if not questions:
-                raise UserError("Gemini didn't find any questions in the exam. Is the right file marked as the exam?")
+                exam_id=exam_id, number=q["number"], prompt=q["prompt"], answer=q["answer"], marks=q["marks"],
+                topic_id=self._topic_by_title(topics, q["topic"]), result=q["result"],
+                note=q["note"] if q["result"] else "",
+            ) for q in found]
             with self._lock:
                 if self._store is not store or store.get_exam(exam_id) is None:
-                    raise UserError("The exam changed while Gemini was reading it. Try again.")
+                    raise UserError("The exam changed while Groq was reading it. Try again.")
                 store.replace_questions(exam_id, questions)
-                score = str(answer.get("score") or "").strip()[:30] if attempt else ""
                 if score and not exam.score:
                     store.update_exam(replace(exam, score=score))
             marked = sum(1 for q in questions if q.result)
-            return {"ok": True, "message": f"Found {len(questions)} question{'s' if len(questions) != 1 else ''}"
+            return {"ok": True, "message": f"{exam.title}: found {len(questions)} question{'s' if len(questions) != 1 else ''}"
                     + (f" and marked {marked} from your answers." if marked else ".")}
-        return self._gemini_call(work)
+        return self._ai_call(f"read:{exam_id}", work)
 
     def make_exam(self, data: dict) -> dict:
-        """Gemini writes a practice exam from the course's past exams, aimed at what went badly before.
-        data: course_id, size (short/half/full), focus (struggles/balanced/topics), topic_ids, wishes."""
+        """Groq writes a practice exam from the course's past exams (the questions read from them), aimed at
+        what went badly before. data: course_id, size (short/half/full), focus (struggles/balanced/topics),
+        topic_ids, wishes."""
         def work() -> dict:
             course_id = _int(data, "course_id")
             size = _text(data, "size") or "full"
@@ -1544,44 +1673,38 @@ class Api:
                 struggles = exam_logic.struggle_summary(questions, topics, store.list_weak_spots(course_id))
                 earlier = [q.prompt for e in exams if e.kind == "practice" for q in store.list_questions(e.id)]  # type: ignore[arg-type]
                 number = sum(1 for e in exams if e.kind == "practice") + 1
-                # Past exams and their solutions, newest first, as many as Gemini takes in one go.
-                attached: list[GeminiFile] = []
-                listing: list[tuple[str, str]] = []
-                left_out = 0
-                total = 0
+                # Past exams as the questions read from them, newest first.
+                past, unread = [], 0
                 for e in exams:
                     if e.kind != "past":
                         continue
-                    for f in store.list_exam_files(e.id):  # type: ignore[arg-type]
-                        if f.role not in ("exam", "solution"):
-                            continue
-                        path = files.path(self._files_dir(store), f.key)
-                        if not path.exists() or total + f.size > GEMINI_MAX_UPLOAD:
-                            left_out += 1
-                            continue
-                        attached.append(GeminiFile(f.name, f.mime, path.read_bytes()))
-                        listing.append((f.role, f"{e.title}: {f.name}"))
-                        total += f.size
-            prompt = exam_logic.make_prompt(course, topics, listing, struggles, size, focus, focus_topics,
+                    qs = store.list_questions(e.id)  # type: ignore[arg-type]
+                    if qs:
+                        past.append((e.title, e.notes, qs))
+                    else:
+                        unread += 1
+            prompt = exam_logic.make_prompt(course, topics, past, struggles, size, focus, focus_topics,
                                             _text(data, "wishes"), earlier, number)
-            answer = self._gemini().ask([*attached, prompt], exam_logic.MAKE_SCHEMA, system=exam_logic.SYSTEM)
+            self._jobs[f"make:{course_id}"] = "Writing the questions and solutions"
+            answer = self._groq().ask([prompt], exam_logic.MAKE_SCHEMA, system=exam_logic.SYSTEM)
             made = [ExamQuestion(
                 exam_id=0, number=str(q.get("number") or "").strip()[:20], prompt=str(q.get("prompt") or ""),
                 answer=str(q.get("answer") or ""), marks=str(q.get("marks") or "").strip()[:20],
                 topic_id=self._topic_by_title(topics, str(q.get("topic") or "")), why=str(q.get("why") or ""),
             ) for q in answer.get("questions") or [] if isinstance(q, dict) and q.get("prompt")]
             if not made:
-                raise UserError("Gemini didn't write any questions. Try again.")
+                raise UserError("Groq didn't write any questions. Try again.")
             with self._lock:
                 if self._store is not store or store.get_course(course_id) is None:  # type: ignore[arg-type]
-                    raise UserError("The subject changed while Gemini was writing. Try again.")
+                    raise UserError("The subject changed while Groq was writing. Try again.")
                 title = " ".join(str(answer.get("title") or "").split())[:120] or f"Practice exam {number}"
                 exam = store.add_exam(Exam(course_id=course_id, title=title, kind="practice",  # type: ignore[arg-type]
                                            notes=str(answer.get("intro") or "")))
                 store.replace_questions(exam.id, made)  # type: ignore[arg-type]
-            note = f" ({left_out} file{'s were' if left_out != 1 else ' was'} left out: too big or not downloaded yet)" if left_out else ""
-            return {"ok": True, "id": exam.id, "message": f"“{title}” is ready{note}."}
-        return self._gemini_call(work)
+            note = (f" ({unread} past exam{'s' if unread != 1 else ''} not used: press Read questions on "
+                    f"{'them' if unread != 1 else 'it'} first)") if unread else ""
+            return {"ok": True, "id": exam.id, "course_id": course_id, "message": f"“{title}” is ready{note}."}
+        return self._ai_call(f"make:{_int(data, 'course_id')}", work)
 
     @action
     def save_printable(self, title: str, html: str) -> dict:

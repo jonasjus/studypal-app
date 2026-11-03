@@ -55,6 +55,19 @@ def _smoke_test(window) -> None:
     import time
 
     found = "nothing"
+    try:  # the exam reader's PDF and image libraries made it into the build
+        import io
+
+        import pypdfium2 as pdfium
+
+        from .core import pages
+
+        pdf, out = pdfium.PdfDocument.new(), io.BytesIO()
+        pdf.new_page(595, 842)
+        pdf.save(out)
+        pdf_check = "pages on" if pages.pdf_pages("check.pdf", out.getvalue()) else "pages off"
+    except Exception as e:
+        pdf_check = f"pages off ({e})"
     for _ in range(40):
         time.sleep(0.5)
         try:
@@ -71,6 +84,7 @@ def _smoke_test(window) -> None:
                 window.evaluate_js("document.querySelector('.welcome') ? '.welcome' : ''"))):
             break
     # A windowed Windows build has no console to print to, so it can write the result to a file instead.
+    found = f"{found}, {pdf_check}"
     out = os.environ.get("STUDYPAL_SMOKE_OUT")
     if out:
         Path(out).write_text(f"smoke test: {found}\n", encoding="utf-8")
@@ -103,6 +117,7 @@ def main(argv: list[str] | None = None) -> None:
         text_select=True,
     )
     api._window = window
+    api.watch()  # the Pomodoro's pling and notifications, also while the window is in the background
     try:
         webview.start(_smoke_test, window, debug=args.debug) if args.smoke_test else webview.start(debug=args.debug)
     finally:

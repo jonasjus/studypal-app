@@ -11,7 +11,7 @@ import os
 import re
 from pathlib import Path
 
-# What Gemini can read, by extension.
+# What can be added to an exam (and read by Groq, after core/pages.py), by extension.
 TYPES = {
     ".pdf": "application/pdf",
     ".png": "image/png",

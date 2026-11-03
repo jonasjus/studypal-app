@@ -176,7 +176,7 @@ class Section:
     id: int | None = None
 
 
-EXAM_KINDS = ("past", "practice")  # uploaded from a real exam, or made by Gemini to practise on
+EXAM_KINDS = ("past", "practice")  # uploaded from a real exam, or made by Groq to practise on
 FILE_ROLES = ("exam", "solution", "attempt")  # the paper, its answer key, your own (graded) answers
 RESULTS = ("ok", "partial", "missed")  # how a question went; "" while unmarked
 

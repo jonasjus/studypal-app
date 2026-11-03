@@ -68,6 +68,7 @@ def main() -> None:
         seed(api._store)
     else:
         api = Api(paths.db_path())
+    api.watch()
     serve(api, args.port)
 
 

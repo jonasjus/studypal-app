@@ -46,7 +46,7 @@ jobs:
           if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Output "timed out" }
           if (-not (Test-Path smoke.txt)) { Write-Output "no result"; exit 1 }
           Get-Content smoke.txt
-          if (-not (Select-String -Path smoke.txt -Pattern "maths on, research on" -Quiet)) { exit 1 }
+          if (-not (Select-String -Path smoke.txt -Pattern "maths on, research on, pages on" -Quiet)) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:

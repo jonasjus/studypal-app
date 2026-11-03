@@ -1,11 +1,12 @@
 """Pomodoro runs: focus blocks with breaks, where every finished focus block is logged as a session.
 
 The run is just saved state (which phase, when it started), so nothing has to keep running in the
-background: whoever looks next (the TUI, any `study` command, the `study notify` job) calls
-`advance`, which works out what has happened since and returns the focus blocks that finished.
+background: whoever looks next calls `advance`, which works out what has happened since.
 
-After a break ends the run waits in READY until you start the next focus block. Starting focus
-automatically would log study time while you're away from the desk.
+A focus block doesn't end by itself: when its time is up the clock keeps counting (overtime) until you
+say "let's take a break", and the whole stretch is logged then. After a break ends the run waits in READY
+until you start the next focus block. Starting either automatically would decide for you when to stop,
+or log study time while you're away from the desk.
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ def phase_length(phase: PomoPhase, settings: PomodoroSettings) -> timedelta | No
 
 
 def remaining(run: PomodoroRun, now: datetime, settings: PomodoroSettings) -> timedelta | None:
-    """Time left in the current phase (frozen while paused). None while READY."""
+    """Time left in the current phase (frozen while paused), 0 once focus time is up. None while READY."""
     length = phase_length(run.phase, settings)
     if length is None:
         return None
@@ -90,26 +91,47 @@ def start(course_id: int | None, now: datetime, topic_id: int | None = None, not
                        phase_started_at=now, block_started_at=now, note=note, project_id=project_id)
 
 
+def focus_done(run: PomodoroRun, now: datetime, settings: PomodoroSettings) -> bool:
+    """Focus time is up, and the clock is counting the extra minutes until you take a break."""
+    return run.phase is PomoPhase.FOCUS and (run.paused_at or now) >= run.phase_started_at + settings.focus
+
+
+def overtime(run: PomodoroRun, now: datetime, settings: PomodoroSettings) -> timedelta:
+    """How far past the focus time you've kept going."""
+    if not focus_done(run, now, settings):
+        return timedelta(0)
+    return (run.paused_at or now) - (run.phase_started_at + settings.focus)
+
+
 def advance(run: PomodoroRun, now: datetime, settings: PomodoroSettings) -> tuple[PomodoroRun, list[FinishedBlock]]:
-    """Move the run forward to `now`, returning every focus block that finished on the way."""
-    if run.paused:
+    """Move the run forward to `now`: a break that's over becomes READY. Focus never ends here (see
+    `take_break`), so this never finishes a block; it returns them for the callers that log what it finds."""
+    if run.paused or not run.phase.is_break:
         return run, []
-    finished: list[FinishedBlock] = []
-    while True:
-        length = phase_length(run.phase, settings)
-        if length is None:
-            break
-        end = run.phase_started_at + length
-        if now < end:
-            break
-        if run.phase is PomoPhase.FOCUS:
-            number = run.completed + 1
-            finished.append(FinishedBlock(run.block_started_at, int(length.total_seconds() // 60), number))
-            next_phase = PomoPhase.LONG_BREAK if number % settings.long_break_every == 0 else PomoPhase.SHORT_BREAK
-            run = replace(run, phase=next_phase, phase_started_at=end, completed=number)
-        else:
-            run = replace(run, phase=PomoPhase.READY, phase_started_at=end)
-    return run, finished
+    end = run.phase_started_at + phase_length(run.phase, settings)  # type: ignore[operator]
+    if now < end:
+        return run, []
+    return replace(run, phase=PomoPhase.READY, phase_started_at=end), []
+
+
+def _focus_block(run: PomodoroRun, now: datetime, settings: PomodoroSettings) -> list[FinishedBlock]:
+    """The focus done in the current block, extra minutes included (if it's a minute or more)."""
+    worked = (run.paused_at or now) - run.phase_started_at
+    minutes = int(worked.total_seconds() // 60)
+    if minutes < 1:
+        return []
+    return [FinishedBlock(run.block_started_at, minutes, run.completed + 1, partial=worked < settings.focus)]
+
+
+def take_break(run: PomodoroRun, now: datetime, settings: PomodoroSettings) -> tuple[PomodoroRun, list[FinishedBlock]]:
+    """End the focus block now and start its break (a long one after every few blocks)."""
+    if run.phase is not PomoPhase.FOCUS:
+        return run, []
+    now = now.replace(microsecond=0)
+    block = _focus_block(run, now, settings)
+    number = run.completed + 1
+    next_phase = PomoPhase.LONG_BREAK if number % settings.long_break_every == 0 else PomoPhase.SHORT_BREAK
+    return replace(run, phase=next_phase, phase_started_at=now, completed=number, paused_at=None), block
 
 
 def next_focus(run: PomodoroRun, now: datetime) -> PomodoroRun:
@@ -134,11 +156,8 @@ def resume(run: PomodoroRun, now: datetime) -> PomodoroRun:
 
 
 def stop(run: PomodoroRun, now: datetime, settings: PomodoroSettings) -> list[FinishedBlock]:
-    """End the run. Returns finished blocks, plus the focus done so far if stopped mid-block (a minute or more)."""
+    """End the run. Returns the focus block in progress, if any (a minute or more, extra minutes included)."""
     run, finished = advance(run, now, settings)
     if run.phase is PomoPhase.FOCUS:
-        done = (run.paused_at or now) - run.phase_started_at
-        minutes = int(done.total_seconds() // 60)
-        if minutes >= 1:
-            finished.append(FinishedBlock(run.block_started_at, minutes, run.completed + 1, partial=True))
+        finished += _focus_block(run, now, settings)
     return finished

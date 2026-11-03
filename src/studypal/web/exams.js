@@ -1,7 +1,7 @@
 "use strict";
 
 // The exams page: past exams (with their files and how each question went) and practice exams that
-// Gemini writes from them. Loaded after app.js; uses its helpers, and adds to its `actions`.
+// Groq writes from them. Loaded after app.js; uses its helpers, and adds to its `actions`.
 
 // ---------- drawing ----------
 
@@ -32,7 +32,7 @@ function questionBlock(q, exam) {
   const seg = ["ok", "partial", "missed"].map((r) => `<button class="res ${r}${q.result === r ? " on" : ""}" data-act="q-result"
       data-id="${q.id}" data-result="${q.result === r ? "" : r}" aria-pressed="${q.result === r}"
       title="${q.result === r ? "Click again to clear" : `Mark as ${RESULT_LABELS[r].toLowerCase()}`}">${RESULT_LABELS[r]}</button>`).join("");
-  const answerLabel = exam.kind === "practice" ? "Solution" : exam.has_solution ? "Answer (from the solutions)" : "Suggested answer (by Gemini)";
+  const answerLabel = exam.kind === "practice" ? "Solution" : exam.has_solution ? "Answer (from the solutions)" : "Suggested answer (by Groq)";
   return `<div class="q${q.result ? ` r-${q.result}` : ""}">
     <div class="q-head">
       <span class="q-num">${esc(q.number || "·")}</span>
@@ -56,15 +56,17 @@ function examPanel(e, d) {
   const fileChips = e.files.map((f) => `<button class="file-chip${f.available ? "" : " missing"}" data-act="open-exam-file" data-id="${f.id}"
       title="${f.available ? "Open" : "Not downloaded to this computer yet"}">${ICON_FILE}<span>${esc(f.name)}</span><small>${esc(ROLE_LABELS[f.role] || f.role)}</small></button>`).join("");
   const canRead = e.kind === "past" && e.files.some((f) => f.role === "exam");
-  const readBtn = canRead ? `<button class="btn small${e.counts.total ? " ghost" : ""}" data-act="read-exam" data-id="${e.id}"
-      title="Gemini reads the files and lists the questions">${ICON_SPARK} ${e.counts.total ? "Read again" : "Read questions"}</button>` : "";
+  const readBtn = state.jobs[`read:${e.id}`] ? jobLine(`read:${e.id}`)
+    : canRead ? `<button class="btn small${e.counts.total ? " ghost" : ""}" data-act="read-exam" data-id="${e.id}"
+      title="Groq reads the files and lists the questions">${ICON_SPARK} ${e.counts.total ? "Read again" : "Read questions"}</button>` : "";
   let body = "";
   if (open) {
     const intro = e.kind === "practice" && e.notes ? `<div class="md exam-intro">${md(e.notes)}</div>` : "";
     const notes = e.kind === "past" && e.notes ? `<p class="muted exam-notes">${esc(e.notes)}</p>` : "";
     const qs = e.questions.length ? e.questions.map((q) => questionBlock(q, e)).join("")
-      : `<p class="empty-small">${canRead
-        ? (d.gemini ? "Click <b>Read questions</b> and Gemini lists them, with answers. Then mark how each one went." : "Set up Gemini to have the questions listed for you, or add them by hand.")
+      : `<p class="empty-small">${state.jobs[`read:${e.id}`] ? "Groq is reading the questions. They'll show up here when it's done."
+        : canRead
+        ? (d.ai ? "Click <b>Read questions</b> and Groq lists them, with answers. Then mark how each one went." : "Set up Groq to have the questions listed for you, or add them by hand.")
         : "Add the exam paper (a PDF or photos) so the questions can be read from it, or add them by hand."}
         <button class="btn small ghost" data-act="add-question" data-id="${e.id}">+ Add a question by hand</button></p>`;
     body = `${fileChips ? `<div class="file-chips">${fileChips}</div>` : ""}${notes}${intro}<div class="qs">${qs}</div>`;
@@ -102,22 +104,24 @@ function practicePanel(d) {
 
 function renderExams(d) {
   const c = d.course;
-  const setup = d.gemini ? "" : `<div class="panel panel-body gemini-setup">
-      <div class="grow"><b>Set up Gemini to read exams and write practice exams</b>
-      <p class="muted">Google's Gemini needs an API key, which is free. It takes a minute to get one.</p></div>
-      <button class="btn primary" data-act="gemini-setup">Set up Gemini</button></div>`;
+  const setup = d.ai ? "" : `<div class="panel panel-body ai-setup">
+      <div class="grow"><b>Set up Groq to read exams and write practice exams</b>
+      <p class="muted">Groq needs an API key, which is free. It takes a minute to get one.</p></div>
+      <button class="btn primary" data-act="ai-setup">Set up Groq</button></div>`;
   const past = d.past.length ? d.past.map((e) => examPanel(e, d)).join("")
-    : `<div class="panel panel-body"><p class="muted" style="margin:0">Add the past exams for ${esc(c.code)}: the exam paper, and the solutions and your own (graded) answers if you have them. Gemini lists the questions, and you mark which ones went badly.</p></div>`;
-  const practice = d.practice.length ? d.practice.map((e) => examPanel(e, d)).join("")
+    : `<div class="panel panel-body"><p class="muted" style="margin:0">Add the past exams for ${esc(c.code)}: the exam paper, and the solutions and your own (graded) answers if you have them. Groq lists the questions, and you mark which ones went badly.</p></div>`;
+  const writing = state.jobs[`make:${c.id}`]
+    ? `<div class="panel panel-body job-card">${jobLine(`make:${c.id}`)}<span class="muted">You can keep using StudyPal meanwhile.</span></div>` : "";
+  const practice = writing + (d.practice.length || writing ? d.practice.map((e) => examPanel(e, d)).join("")
     : `<div class="panel panel-body"><p class="muted" style="margin:0">${d.past.length
       ? "Make a practice exam: new questions in the style of your past exams, aimed at what you struggled with."
-      : "Practice exams are written in the style of your past exams. Add some first, or make one from your topics alone."}</p></div>`;
+      : "Practice exams are written in the style of your past exams. Add some first, or make one from your topics alone."}</p></div>`);
   return `<div class="subject-head" style="--course:${esc(cc(c.color))}">
     <div class="crumbs"><button class="btn small ghost" data-act="open-subject" data-id="${c.id}">${ICONS.back} ${esc(c.code)} ${esc(c.name)}</button></div>
     <div class="title-line"><h1>Exams</h1>
       <div class="title-actions">
         <button class="btn" data-act="add-exam" data-course="${c.id}">+ Add past exam</button>
-        <button class="btn primary" data-act="make-exam" data-course="${c.id}">${ICON_SPARK} Make practice exam</button>
+        <button class="btn primary" data-act="make-exam" data-course="${c.id}"${state.jobs[`make:${c.id}`] ? " disabled" : ""}>${ICON_SPARK} ${state.jobs[`make:${c.id}`] ? "Writing…" : "Make practice exam"}</button>
       </div>
     </div>
   </div>
@@ -190,7 +194,7 @@ function examForm(courseId, exam = null) {
   form.querySelector(".form-error").insertAdjacentHTML("beforebegin", `<div class="field"><span>Files</span>
       <div class="file-rows"></div>
       <div><button type="button" class="btn small" data-files="add">+ Add files…</button></div>
-      <small>PDFs or photos. Add the exam itself, and if you have them the solutions and your own answers (graded if possible): with your answers, Gemini can tell which questions went badly.</small></div>`);
+      <small>PDFs or photos. Add the exam itself, and if you have them the solutions and your own answers (graded if possible): with your answers, Groq can tell which questions went badly.</small></div>`);
   const rows = form.querySelector(".file-rows");
   const draw = () => {
     const existing = (exam?.files || []).filter((f) => !removed.has(f.id));
@@ -252,40 +256,43 @@ function questionForm(examId, q = null) {
   });
 }
 
-function geminiFields(g) {
+function aiFields(g) {
   return [
-    { name: "gemini_key", label: "Gemini API key", type: "password", value: "",
-      placeholder: g.has_key ? `Saved (${g.key_hint || "hidden"}). Paste a new one to replace it` : "Paste your key here",
-      hint: `Used to read exams and write practice exams. Get a free key at <a href="${esc(g.key_url)}" target="_blank" rel="noopener">aistudio.google.com/apikey</a> (sign in with Google, then <b>Create API key</b>). It's kept on this computer only.` },
-    { name: "gemini_model", label: "Gemini model", type: "select", value: g.model, options: g.models },
-    ...(g.has_key ? [{ name: "gemini_forget", label: "Remove the saved key from this computer", type: "checkbox", value: false }] : []),
+    { name: "ai_key", label: "Groq API key", type: "password", value: "",
+      placeholder: g.has_key ? `Saved (${g.key_hint || "hidden"}). Paste a new one to replace it` : "Paste your key here (gsk_…)",
+      hint: `Used to read exams and write practice exams. Get a free key at <a href="${esc(g.key_url)}" target="_blank" rel="noopener">console.groq.com/keys</a> (sign in, then <b>Create API Key</b>). It's kept on this computer only.` },
+    { name: "ai_model", label: "Model for writing practice exams", type: "select", value: g.model, options: g.models,
+      hint: "Exams are always read by Groq's model that can see images." },
+    ...(g.has_key ? [{ name: "ai_forget", label: "Remove the saved key from this computer", type: "checkbox", value: false }] : []),
   ];
 }
 
-async function geminiForm() {
-  const g = await call("gemini_settings");
+async function aiForm() {
+  const g = await call("ai_settings");
   openForm({
-    title: "Set up Gemini", wide: true, submit: "Save",
-    intro: "StudyPal uses Google's Gemini to read your past exams and write new ones. It needs your own API key:<ol class=\"steps\"><li>Open <a href=\"" + esc(g.key_url) + "\" target=\"_blank\" rel=\"noopener\">aistudio.google.com/apikey</a> and sign in with a Google account.</li><li>Click <b>Create API key</b> and copy it.</li><li>Paste it below.</li></ol>The free key has daily limits, which is plenty for a few exams a day. Your exams are sent to Google when Gemini reads them.",
-    fields: geminiFields(g),
+    title: "Set up Groq", wide: true, submit: "Save",
+    intro: "StudyPal uses Groq to read your past exams and write new ones. It needs your own API key:<ol class=\"steps\"><li>Open <a href=\"" + esc(g.key_url) + "\" target=\"_blank\" rel=\"noopener\">console.groq.com/keys</a> and sign in.</li><li>Click <b>Create API Key</b> and copy it.</li><li>Paste it below.</li></ol>The free plan has per-minute and daily limits; StudyPal waits and carries on when it hits the per-minute one. Your exam pages are sent to Groq when it reads them.",
+    fields: aiFields(g),
     onSubmit: async (v) => {
-      if (!v.gemini_key && !g.has_key) throw new UserError("Paste your API key first.");
-      return call("save_gemini", { key: v.gemini_key, model: v.gemini_model, forget: !!v.gemini_forget });
+      if (!v.ai_key && !g.has_key) throw new UserError("Paste your API key first.");
+      return call("save_ai", { key: v.ai_key, model: v.ai_model, forget: !!v.ai_forget });
     },
   });
 }
 
 function makeExamForm(courseId) {
   const d = state.data;
-  if (!d.gemini) { geminiForm(); return; }
-  const files = d.past.reduce((n, e) => n + e.files.filter((f) => f.role !== "attempt").length, 0);
+  if (!d.ai) { aiForm(); return; }
+  const read = d.past.filter((e) => e.counts.total).length;
+  const unread = d.past.length - read;
   const marked = d.tally.reduce((n, t) => n + t.missed + t.partial, 0);
-  const uses = [files ? `${plural(d.past.filter((e) => e.files.length).length, "past exam")} (${plural(files, "file")})` : "",
+  const uses = [read ? `the questions of ${plural(read, "past exam")}` : "",
     marked ? `${plural(marked, "question")} you missed or got partly right` : "",
     d.weak_open ? plural(d.weak_open, "open weak spot") : ""].filter(Boolean);
   const form = openForm({
     title: "Make a practice exam", wide: true, submit: "Make exam",
-    intro: uses.length ? `Gemini uses ${uses.join(", ")}, and your topics.` : "There are no past exams or marked questions yet, so Gemini goes by your topics alone.",
+    intro: (uses.length ? `Groq uses ${uses.join(", ")}, and your topics.` : "There are no read past exams or marked questions yet, so Groq goes by your topics alone.")
+      + (unread ? ` ${unread === 1 ? "One past exam hasn't" : `${unread} past exams haven't`} been read yet: press <b>Read questions</b> on ${unread === 1 ? "it" : "them"} first so Groq can use ${unread === 1 ? "it" : "them"}.` : ""),
     fields: [
       { name: "size", label: "How long?", type: "choices", value: "short", options: [
         ["short", "Short", "4 to 6 questions, about 45 minutes"],
@@ -301,24 +308,18 @@ function makeExamForm(courseId) {
       { name: "wishes", label: "Anything else? (optional)", type: "textarea", rows: 2, placeholder: "e.g. more proofs, no multiple choice, write it in English" },
     ],
     onSubmit: async (v, f) => {
-      const button = f.querySelector("button[type=submit]");
-      const started = Date.now();
-      const label = () => { button.textContent = `Gemini is writing… ${Math.round((Date.now() - started) / 1000)}s`; };
-      label();
-      const clock = setInterval(label, 1000);
-      f.classList.add("working");
-      try {
-        const topic_ids = [...f.querySelectorAll("[data-topic]:checked")].map((x) => Number(x.dataset.topic));
+      if (v.focus === "topics" && !f.querySelector("[data-topic]:checked")) throw new UserError("Pick the topics the exam should be about.");
+      const topic_ids = [...f.querySelectorAll("[data-topic]:checked")].map((x) => Number(x.dataset.topic));
+      runJob(`make:${courseId}`, courseId, "a practice exam", async () => {
         const r = await call("make_exam", { ...v, course_id: courseId, topic_ids });
         state.openExams.add(r.id);
         saveOpenExams();
-        setTimeout(() => document.getElementById(`exam-${r.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
-        return r;
-      } finally {
-        clearInterval(clock);
-        button.textContent = "Make exam";
-        f.classList.remove("working");
-      }
+        toast(r.message);
+        scheduleSync();
+        if (state.view.name === "exams" && state.view.id === courseId) {
+          setTimeout(() => document.getElementById(`exam-${r.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
+        }
+      });
     },
   });
   const picks = form.querySelector("[data-field=topics_pick]");
@@ -330,38 +331,75 @@ function makeExamForm(courseId) {
   update();
 }
 
-// A busy note over the page while Gemini reads (it can take a minute).
-function busy(message) {
-  const el = document.createElement("div");
-  el.className = "busy";
-  const started = Date.now();
-  el.innerHTML = `<div class="busy-box"><span class="spinner"></span><span class="busy-text"></span></div>`;
-  const text = el.querySelector(".busy-text");
-  const draw = () => { text.textContent = `${message} ${Math.round((Date.now() - started) / 1000)}s`; };
-  draw();
-  const clock = setInterval(draw, 1000);
-  document.body.append(el);
-  return () => { clearInterval(clock); el.remove(); };
+// ---------- Groq working in the background ----------
+
+// Reading an exam or writing one takes a while (a request per few pages). It runs while you carry on: the
+// exam shows a spinner with how far it's got, the top bar shows Groq is busy from any page, and a
+// message says when it's done. Keys are "read:<exam id>" and "make:<course id>", as in api.py.
+state.jobs = {};  // key -> {course, title, text, started}
+let jobsTimer = null;
+
+function jobText(key) {
+  const j = state.jobs[key];
+  return j ? `${j.text} · ${Math.round((Date.now() - j.started) / 1000)}s` : "";
+}
+
+function jobLine(key) {
+  return `<span class="job" data-job="${esc(key)}"><span class="spinner small"></span><span class="job-text">${esc(jobText(key))}</span></span>`;
+}
+
+function renderJobs() {
+  const keys = Object.keys(state.jobs);
+  const el = $("#jobs");
+  if (!keys.length) { el.innerHTML = ""; return; }
+  const first = state.jobs[keys[0]];
+  const what = keys.length > 1 ? `Groq is on ${keys.length} jobs`
+    : `Groq is ${keys[0].startsWith("make:") ? "writing" : "reading"} ${first.title}`;
+  el.innerHTML = `<button class="jobs-pill" data-act="open-job" data-course="${first.course}" title="Show the exams page">
+    <span class="spinner small"></span><span>${esc(what)}</span></button>`;
+  for (const key of keys) {
+    document.querySelectorAll(`[data-job="${CSS.escape(key)}"] .job-text`).forEach((t) => { t.textContent = jobText(key); });
+  }
+}
+
+async function pollJobs() {
+  if (!Object.keys(state.jobs).length) { clearInterval(jobsTimer); jobsTimer = null; return; }
+  try {
+    const now = await call("ai_jobs");
+    for (const [key, text] of Object.entries(now)) if (state.jobs[key]) state.jobs[key].text = text;
+  } catch (e) { /* the next look tries again */ }
+  renderJobs();
+}
+
+// Start `work` in the background as job `key`; the page redraws when it starts and when it's done.
+async function runJob(key, course, title, work) {
+  state.jobs[key] = { course, title, text: "Starting…", started: Date.now() };
+  renderJobs();
+  if (!jobsTimer) jobsTimer = setInterval(pollJobs, 1000);
+  if (state.view.name === "exams") refresh();
+  try {
+    await work();
+  } catch (err) {
+    toast(`${title}: ${err.message}`, true);
+  } finally {
+    delete state.jobs[key];
+    renderJobs();
+    if (state.view.name === "exams") await refresh();
+  }
 }
 
 async function readExam(id) {
   const e = state.data.past.find((x) => x.id === id);
-  if (!state.data.gemini) { geminiForm(); return; }
+  if (!state.data.ai) { aiForm(); return; }
   if (e.counts.total && !(await confirmBox("Read the questions again?",
     `The ${plural(e.counts.total, "question")} listed now are replaced, along with how you marked them.`, "Read again"))) return;
-  const done = busy("Gemini is reading the exam (this can take a few minutes)…");
-  try {
+  runJob(`read:${id}`, state.data.course.id, e.title, async () => {
     const r = await call("read_exam", id);
     state.openExams.add(id);
     saveOpenExams();
     toast(r.message);
-    await refresh();
     scheduleSync();
-  } catch (err) {
-    toast(err.message, true);
-  } finally {
-    done();
-  }
+  });
 }
 
 // ---------- printing ----------
@@ -391,7 +429,8 @@ Object.assign(actions, {
   "open-exams": (el) => go({ name: "exams", id: Number(el.dataset.id) }),
   "add-exam": (el) => examForm(Number(el.dataset.course)),
   "make-exam": (el) => makeExamForm(Number(el.dataset.course)),
-  "gemini-setup": () => geminiForm(),
+  "ai-setup": () => aiForm(),
+  "open-job": (el) => go({ name: "exams", id: Number(el.dataset.course) }),
   "fold-exam": (el) => {
     const id = Number(el.dataset.id);
     state.openExams.has(id) ? state.openExams.delete(id) : state.openExams.add(id);

@@ -9,6 +9,12 @@ from studypal.core.models import Course
 from studypal.core.storage import Store
 
 
+@pytest.fixture(autouse=True)
+def quiet(monkeypatch):
+    """Tests never play the Pomodoro's pling out loud."""
+    monkeypatch.setenv("STUDYPAL_SOUND", "print")
+
+
 @pytest.fixture
 def db_file(tmp_path: Path) -> Path:
     return tmp_path / "study.db"

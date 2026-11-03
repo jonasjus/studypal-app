@@ -579,15 +579,20 @@ function renderRunning() {
   } else {
     const isBreak = r.phase === "short_break" || r.phase === "long_break";
     const ready = r.phase === "ready";
+    // Focus time is up: the clock counts the extra minutes until you choose to take the break.
+    const over = r.phase === "focus" && r.focus_done;
     const sub = ready ? "Break's over. Start the next focus block when you're ready."
-      : isBreak ? "Take a break. Stand up, drink some water." : `Focus block ${r.completed + 1}${r.paused ? " · paused" : ""}`;
+      : isBreak ? "Take a break. Stand up, drink some water."
+      : over ? `Focus block ${r.completed + 1} done. Keep going as long as you like${r.paused ? " · paused" : ""}`
+      : `Focus block ${r.completed + 1}${r.paused ? " · paused" : ""}`;
     const main = ready ? `<button class="btn primary" data-act="pomo-next">Start focus</button>`
       : isBreak ? `<button class="btn" data-act="pomo-next">Skip break</button>`
+      : over ? `<button class="btn primary" data-act="pomo-break">Let's take a break</button>`
       : `<button class="btn" data-act="pomo-pause">${r.paused ? "Resume" : "Pause"}</button>`;
-    el.innerHTML = `<div class="running${isBreak || ready ? " break" : ""}${r.paused ? " paused" : ""}"><span class="pulse"></span>
+    el.innerHTML = `<div class="running${isBreak || ready ? " break" : ""}${over ? " overtime" : ""}${r.paused ? " paused" : ""}"><span class="pulse"></span>
       <span class="clock" id="clock"></span>
-      ${what}<small>${esc(r.phase_label)} · ${esc(sub)}</small></div>
-      <div class="actions">${main}<button class="btn primary" data-act="pomo-stop">Stop and save</button></div></div>`;
+      ${what}<small>${esc(over ? "Time for a break" : r.phase_label)} · ${esc(sub)}</small></div>
+      <div class="actions">${main}<button class="btn${over ? "" : " primary"}" data-act="pomo-stop">Stop and save</button></div></div>`;
   }
   updateClock();
 }
@@ -598,6 +603,8 @@ function updateClock() {
   const passed = (Date.now() - state.runningAt) / 1000;
   if (r.kind === "timer") {
     el.textContent = clock(r.elapsed_seconds + passed);
+  } else if (r.phase === "focus" && r.focus_done) {
+    el.textContent = `+${clock(r.overtime_seconds + (r.paused ? 0 : passed))}`;
   } else if (r.remaining_seconds === null) {
     el.textContent = "—";
   } else {
@@ -1251,12 +1258,15 @@ async function startForm(courseId = null, topicId = null, projectId = null) {
 async function settingsForm() {
   const s = await call("get_settings");
   const where = await call("data_location");
-  const g = await call("gemini_settings");
+  const g = await call("ai_settings");
   const before = activeTheme.name;
   const form = openForm({
     title: "Settings", wide: true,
     onCancel: () => setTheme(before, false),
-    onChange: (el) => { if (el.name === "theme") setTheme(el.value, false); },
+    onChange: (el) => {
+      if (el.name === "theme") setTheme(el.value, false);
+      if (el.name === "sound" && el.checked) call("preview_sound").catch(() => {});  // so you hear what it sounds like
+    },
     fields: [
       { name: "theme", label: "Theme", type: "themes", value: before },
       { row: [
@@ -1273,15 +1283,16 @@ async function settingsForm() {
         { name: "stale_after_days", label: "Remind me to revisit topics after", type: "number", min: 1, value: s.stale_after_days, hint: "days without studying them" },
       ] },
       { name: "notifications", label: "Show notifications for deadlines and Pomodoro breaks", type: "checkbox", value: !!s.notifications },
-      ...geminiFields(g),
+      { name: "sound", label: "Pling when a Pomodoro focus block or break ends", type: "checkbox", value: !!s.sound },
+      ...aiFields(g),
     ],
     extra: `<button type="button" class="btn left" data-act="export">Save a backup…</button>`,
     intro: `<span class="faint" style="font-size:12px">Your data is stored in ${esc(where)}</span>`,
     onSubmit: async (v) => {
       await setTheme(v.theme, true);
-      const { theme, gemini_key, gemini_model, gemini_forget, ...rest } = v;
-      await call("save_gemini", { key: gemini_key, model: gemini_model, forget: !!gemini_forget });
-      return call("save_settings", { ...rest, notifications: rest.notifications ? 1 : 0 });
+      const { theme, ai_key, ai_model, ai_forget, ...rest } = v;
+      await call("save_ai", { key: ai_key, model: ai_model, forget: !!ai_forget });
+      return call("save_settings", { ...rest, notifications: rest.notifications ? 1 : 0, sound: rest.sound ? 1 : 0 });
     },
   });
   form.scrollTop = 0;  // open at the theme picker, not at the first text field
@@ -1505,6 +1516,7 @@ const actions = {
   "timer-cancel": async () => { if (await confirmBox("Discard this session?", "The time on the clock won't be saved.", "Discard")) act("timer_cancel"); },
   "pomo-pause": () => act("pomo_pause"),
   "pomo-next": () => act("pomo_next"),
+  "pomo-break": () => act("pomo_break"),
   "pomo-stop": () => act("pomo_stop"),
 
   "add-source": (el) => sourceForm(Number(el.dataset.course), null, state.data.topics),
