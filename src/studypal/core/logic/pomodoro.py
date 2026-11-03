@@ -40,7 +40,7 @@ class PomodoroSettings:
 
 @dataclass(frozen=True)
 class PomodoroRun:
-    course_id: int
+    course_id: int | None
     phase: PomoPhase
     phase_started_at: datetime  # moved forward by the length of any pause, so phase end = start + length
     block_started_at: datetime  # when the current focus block really began; the logged session starts here
@@ -48,6 +48,7 @@ class PomodoroRun:
     completed: int = 0  # focus blocks finished in this run
     paused_at: datetime | None = None
     note: str = ""
+    project_id: int | None = None  # set instead of course_id when working on a research project
 
     @property
     def paused(self) -> bool:
@@ -82,10 +83,11 @@ def remaining(run: PomodoroRun, now: datetime, settings: PomodoroSettings) -> ti
     return max(timedelta(0), end - (run.paused_at or now))
 
 
-def start(course_id: int, now: datetime, topic_id: int | None = None, note: str = "") -> PomodoroRun:
+def start(course_id: int | None, now: datetime, topic_id: int | None = None, note: str = "",
+          project_id: int | None = None) -> PomodoroRun:
     now = now.replace(microsecond=0)
     return PomodoroRun(course_id=course_id, topic_id=topic_id, phase=PomoPhase.FOCUS,
-                       phase_started_at=now, block_started_at=now, note=note)
+                       phase_started_at=now, block_started_at=now, note=note, project_id=project_id)
 
 
 def advance(run: PomodoroRun, now: datetime, settings: PomodoroSettings) -> tuple[PomodoroRun, list[FinishedBlock]]:

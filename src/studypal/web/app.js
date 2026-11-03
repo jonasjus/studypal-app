@@ -35,6 +35,46 @@ const pct = (x) => `${Math.max(0, Math.min(100, x * 100)).toFixed(2)}%`;
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const pad = (n) => String(n).padStart(2, "0");
 
+// ---------- Markdown with maths ----------
+
+const mdCache = new Map();
+
+// Exam questions, research notes and the like come as Markdown with $...$ maths. HTML in them is shown as text, never run.
+function md(text) {
+  const src = String(text ?? "");
+  if (mdCache.has(src)) return mdCache.get(src);
+  const maths = [];
+  const keep = (tex, display) => { maths.push({ tex, display }); return `\u0000${maths.length - 1}\u0000`; };
+  let t = src
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => keep(m, true))
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => keep(m, true))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => keep(m, false))
+    .replace(/(^|[^\\$])\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g, (_, pre, m) => pre + keep(m, false));
+  t = t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  let html;
+  try {
+    html = window.marked ? marked.parse(t, { gfm: true, breaks: true }) : `<p>${t.replace(/\n/g, "<br>")}</p>`;
+  } catch (e) {
+    html = `<p>${t.replace(/\n/g, "<br>")}</p>`;
+  }
+  // Links only to the web; nothing else that could do something.
+  html = html.replace(/<a href="(?!https?:)[^"]*"/g, "<a").replace(/<a href=/g, '<a target="_blank" rel="noopener" href=');
+  html = html.replace(/\u0000(\d+)\u0000/g, (_, i) => {
+    const m = maths[Number(i)];
+    if (!window.katex) return esc(m.display ? `$$${m.tex}$$` : `$${m.tex}$`);
+    try {
+      // The text was escaped for HTML before marked saw it; KaTeX needs it as typed.
+      const tex = m.tex.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+      return katex.renderToString(tex, { displayMode: m.display, throwOnError: false, output: "html" });
+    } catch (e) {
+      return esc(m.tex);
+    }
+  });
+  if (mdCache.size > 800) mdCache.clear();
+  mdCache.set(src, html);
+  return html;
+}
+
 function localNow() {
   const d = new Date();
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -70,7 +110,12 @@ const ICONS = {
   copy: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
   exam: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1z"/><path d="M16 5h2a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h2"/><path d="M9 12l2 2 4-4"/></svg>',
   book: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>',
+  research: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6.5L4.6 18.4A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.4-2.6L14 9.5V3"/><path d="M7.5 15h9"/></svg>',
+  grip: '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
 };
+// The handle that drags a card or row to a new place (see `sortable` below).
+const dragHandle = (label = "Drag to reorder") =>
+  `<button class="drag-handle" data-act="drag" title="${esc(label)}" aria-label="${esc(label)}">${ICONS.grip}</button>`;
 const iconBtn = (icon, act, attrs = "", title = "") =>
   `<button class="icon-btn small" data-act="${act}" ${attrs} title="${esc(title)}" aria-label="${esc(title)}">${ICONS[icon]}</button>`;
 
@@ -109,7 +154,8 @@ function progressWords(p) {
 
 function subjectCard(c) {
   const close = c.progress.days_left >= 0 && c.progress.days_left <= 2;
-  return `<div class="card" style="--course:${esc(cc(c.color))}" tabindex="0" data-act="open-subject" data-id="${c.id}">
+  return `<div class="card" style="--course:${esc(cc(c.color))}" tabindex="0" data-act="open-subject" data-id="${c.id}" data-kind="course">
+    ${dragHandle()}
     <div class="card-top">
       <span class="code">${esc(c.code)}</span>
       <span class="card-name">${esc(c.name)}</span>
@@ -152,21 +198,40 @@ function weakRow(w, { showCourse = true } = {}) {
   </li>`;
 }
 
+// Study time per day, with research time stacked on top of course time in its own colour.
 function weekChart(d) {
   const max = Math.max(60, ...d.week.map((x) => x.minutes));
-  const bars = d.week.map((x) => `<div class="bar-wrap">
+  const bars = d.week.map((x) => {
+    if (!x.minutes) return `<div class="bar-wrap"><span class="bar-val"></span><div class="bar zero" style="height:2px"></div></div>`;
+    const height = Math.max(4, (x.minutes / max) * 80);
+    const research = x.research_minutes ? Math.max(3, height * x.research_minutes / x.minutes) : 0;
+    return `<div class="bar-wrap" title="${esc(x.length)}${x.research_minutes ? ` · ${esc(minutesWords(x.research_minutes))} research` : ""}">
       <span class="bar-val">${esc(x.length)}</span>
-      <div class="bar${x.minutes ? "" : " zero"}" style="height:${x.minutes ? Math.max(4, (x.minutes / max) * 80) : 2}px"></div>
-    </div>`).join("");
+      <div class="bar-stack" style="height:${height}px">
+        ${research ? `<div class="bar research" style="height:${research}px"></div>` : ""}
+        ${x.course_minutes ? `<div class="bar" style="flex:1"></div>` : ""}
+      </div>
+    </div>`;
+  }).join("");
   const labels = d.week.map((x) => `<span class="${x.today ? "now" : ""}">${esc(x.label)}</span>`).join("");
+  const legend = d.week_has_research ? `<div class="legend week-legend"><span><i style="background:var(--accent)"></i>subjects</span>
+    <span><i style="background:var(--research)"></i>research</span></div>` : "";
   return `<div class="panel">
     <div class="section-head"><h2>This week</h2><span class="muted">${esc(d.week_total)}</span></div>
-    <div class="week">${bars}</div><div class="week-labels">${labels}</div>
+    <div class="week">${bars}</div><div class="week-labels">${labels}</div>${legend}
   </div>`;
 }
 
+function minutesWords(m) {
+  const h = Math.floor(m / 60);
+  return h ? `${h}h${m % 60 ? ` ${m % 60}m` : ""}` : `${m}m`;
+}
+
+// A course or a research project in the overview's list.
+const listCard = (x) => x.kind === "project" ? projectCard(x) : subjectCard(x);
+
 function renderOverview(d) {
-  if (!d.courses.length && !d.done_courses.length) {
+  if (!d.list.length && !d.done_list.length) {
     return `<div class="welcome">
       <h1>Welcome to StudyPal</h1>
       <p>Keep track of your subjects, what you've covered, and when your exams are, all in one place.</p>
@@ -175,22 +240,24 @@ function renderOverview(d) {
         <li><b>List its topics</b>: the chapters or themes you need to know.</li>
         <li>As you work, <b>mark topics as reviewed</b> and log your study time.</li>
       </ol>
+      <p class="muted">Doing research too? <button class="link" data-act="add-project">Add a research project</button> for its notes, journal, references and tasks.</p>
       ${accountWelcome()}
     </div>`;
   }
-  const done = d.done_courses.length
+  const done = d.done_list.length
     ? `<details class="done-pane"${state.showDone ? " open" : ""} data-act-toggle="done">
-        <summary>Finished subjects (${d.done_courses.length})</summary>
-        <div class="cards" style="margin-top:10px">${d.done_courses.map(subjectCard).join("")}</div>
+        <summary>Finished (${d.done_list.length})</summary>
+        <div class="cards" style="margin-top:10px" data-sortable="overview">${d.done_list.map(listCard).join("")}</div>
       </details>` : "";
   return `${greeting(d.greeting)}
   <div class="grid">
     <section>
       <div class="section-head">
-        <h2>Subjects</h2>
-        <button class="btn small" data-act="add-course">+ Add subject</button>
+        <h2>Subjects &amp; research</h2>
+        <span><button class="btn small ghost" data-act="add-project">${ICONS.research} Add research</button>
+        <button class="btn small" data-act="add-course">+ Add subject</button></span>
       </div>
-      <div class="cards">${d.courses.map(subjectCard).join("") || '<p class="muted">All subjects are marked finished.</p>'}</div>
+      <div class="cards" data-sortable="overview">${d.list.map(listCard).join("") || '<p class="muted">Everything is marked finished.</p>'}</div>
       ${d.courses.length ? `<div class="legend">
         <span><i style="background:var(--accent)"></i>material done</span>
         <span><i style="background:repeating-linear-gradient(135deg,var(--warn) 0 3px,transparent 3px 5px)"></i>behind schedule</span>
@@ -503,7 +570,7 @@ async function copyReferences(sources) {
 function renderRunning() {
   const r = state.running, el = $("#running");
   if (!r) { el.innerHTML = ""; return; }
-  const what = `<div class="what"><b>${esc(r.course_code)}${r.topic ? ` · ${esc(r.topic)}` : ""}</b>`;
+  const what = `<div class="what"><b>${r.project_id ? `${ICONS.research} ` : ""}${esc(r.label || r.course_code)}${r.topic ? ` · ${esc(r.topic)}` : ""}</b>`;
   if (r.kind === "timer") {
     el.innerHTML = `<div class="running"><span class="pulse"></span><span class="clock" id="clock"></span>
       ${what}<small>Studying. Stop when you're done and the time is saved.</small></div>
@@ -557,8 +624,11 @@ async function refresh() {
   const scroll = main.scrollTop;
   const v = state.view;
   let data;
+  await beforeRefresh();
+  const focus = keepFocus();
   try {
     if (v.name === "subject") data = await call("subject", v.id);
+    else if (v.name === "research") data = await call("research", v.id);
     else if (v.name === "reading") data = await call("reading", v.id);
     else if (v.name === "exams") data = await call("exams", v.id);
     else data = await call("overview");
@@ -578,6 +648,8 @@ async function refresh() {
     main.innerHTML = renderSubject(data);
   } else if (v.name === "exams") {
     main.innerHTML = renderExams(data);
+  } else if (v.name === "research") {
+    main.innerHTML = renderResearch(data);
   } else {
     main.innerHTML = renderReading(data);
   }
@@ -589,6 +661,27 @@ async function refresh() {
     renderRunning();
   }
   main.scrollTop = scroll;
+  restoreFocus(focus);
+  afterRender();
+}
+
+// Redrawing replaces the page, which would throw away the cursor in a field you're typing in (a note saving
+// itself, the clock ticking). Put it back where it was. Pages with their own needs set these hooks.
+let beforeRefresh = async () => {};
+let afterRender = () => {};
+
+function keepFocus() {
+  const el = document.activeElement;
+  if (!el || !el.id || !$("#view").contains(el)) return null;
+  return { id: el.id, start: el.selectionStart, end: el.selectionEnd, scroll: el.scrollTop };
+}
+
+function restoreFocus(f) {
+  const el = f && document.getElementById(f.id);
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  try { el.setSelectionRange(f.start, f.end); } catch (e) { /* not a text field */ }
+  el.scrollTop = f.scroll;
 }
 
 function go(view) {
@@ -927,6 +1020,42 @@ async function subjectsWithTopics() {
   return await call("courses");
 }
 
+// What study time can be for: active subjects and research projects, as "course:3" / "project:5".
+async function studyTargets(includeAll = false) {
+  const [courses, projects] = await Promise.all([call("courses"), call("projects")]);
+  const subjects = includeAll ? courses : activeSubjects(courses);
+  const research = projects.filter((p) => includeAll || !p.done);
+  return {
+    courses,
+    options: [...subjects.map((c) => [`course:${c.id}`, `${c.code} ${c.name}`]),
+              ...research.map((p) => [`project:${p.id}`, `Research · ${p.title}`])],
+  };
+}
+
+const targetOf = (value) => {
+  const [kind, id] = String(value || "").split(":");
+  return { course_id: kind === "course" ? Number(id) : null, project_id: kind === "project" ? Number(id) : null };
+};
+
+// Keeps a form's topic list in step with what's picked; research projects have no topics.
+function linkTargetTopics(courses) {
+  return (target, form) => {
+    if (target.name !== "target") return;
+    const select = form.querySelector("select[name=topic_id]");
+    if (!select) return;
+    const { course_id } = targetOf(target.value);
+    select.innerHTML = topicOptions(courses, course_id).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+    select.closest(".field").style.display = course_id ? "" : "none";
+  };
+}
+
+function needSomething(options) {
+  if (options.length) return true;
+  toast("Add a subject or a research project first.");
+  courseForm();
+  return false;
+}
+
 function topicOptions(courses, courseId) {
   const c = courses.find((x) => String(x.id) === String(courseId));
   return [["", "— Whole subject —"], ...(c ? c.topics.map((t) => [t.id, t.title]) : [])];
@@ -1055,20 +1184,21 @@ async function deadlineForm(courseId = null, d = null) {
   });
 }
 
-async function sessionForm(courseId = null, s = null) {
-  const courses = await subjectsWithTopics();
-  if (!s && !needSubjects(activeSubjects(courses))) return;
-  const choices = s ? courses : activeSubjects(courses);
-  const cid = s?.course_id ?? courseId ?? choices[0].id;
+async function sessionForm(courseId = null, s = null, projectId = null) {
+  const { courses, options } = await studyTargets(Boolean(s));
+  if (!s && !needSomething(options)) return;
+  const picked = s ? (s.project_id ? `project:${s.project_id}` : `course:${s.course_id}`)
+    : projectId ? `project:${projectId}` : courseId ? `course:${courseId}` : options[0][0];
+  const cid = targetOf(picked).course_id;
   const topic = { name: "topic_id", label: "Topic (optional)", type: "select", value: s?.topic_id ?? "", options: topicOptions(courses, cid) };
   const fields = [
     { name: "id", type: "hidden", value: s?.id ?? "" },
-    s ? { name: "course_id", type: "hidden", value: cid } : { row: [
-      { name: "course_id", label: "Subject", type: "select", value: cid, options: choices.map((c) => [c.id, `${c.code} ${c.name}`]) },
+    s ? { name: "target", type: "hidden", value: picked } : { row: [
+      { name: "target", label: "What did you work on?", type: "select", value: picked, options },
       topic,
     ] },
   ];
-  if (s) fields.push(topic);
+  if (s && cid) fields.push(topic);
   fields.push(
     { row: [
       { name: "hours", label: "Hours", type: "number", min: 0, max: 24, value: s ? Math.floor(s.minutes / 60) : 1 },
@@ -1081,22 +1211,24 @@ async function sessionForm(courseId = null, s = null) {
     title: s ? "Edit study time" : "Log study time",
     intro: s ? "" : "For studying you did without the timer running.",
     fields, submit: s ? "Save" : "Log it",
-    onSubmit: (v) => call("save_session", v),
-    onChange: linkTopicPicker(courses),
+    onSubmit: (v) => call("save_session", { ...v, ...targetOf(v.target) }),
+    onChange: linkTargetTopics(courses),
   });
+  if (!cid) $("#modal-root select[name=topic_id]")?.closest(".field")?.style.setProperty("display", "none");
 }
 
-async function startForm(courseId = null, topicId = null) {
+async function startForm(courseId = null, topicId = null, projectId = null) {
   if (state.running) { toast("You're already studying. Stop that first."); return; }
-  const courses = activeSubjects(await subjectsWithTopics());
-  if (!needSubjects(courses)) return;
+  const { courses, options } = await studyTargets();
+  if (!needSomething(options)) return;
   const settings = await call("get_settings");
-  const cid = courseId ?? courses[0].id;
+  const picked = projectId ? `project:${projectId}` : courseId ? `course:${courseId}` : options[0][0];
+  const cid = targetOf(picked).course_id;
   openForm({
     title: "Start studying",
     fields: [
       { row: [
-        { name: "course_id", label: "Subject", type: "select", value: cid, options: courses.map((c) => [c.id, `${c.code} ${c.name}`]) },
+        { name: "target", label: "What are you working on?", type: "select", value: picked, options },
         { name: "topic_id", label: "Topic (optional)", type: "select", value: topicId ?? "", options: topicOptions(courses, cid) },
       ] },
       { name: "mode", label: "How?", type: "choices", value: state.lastMode || "timer", options: [
@@ -1107,11 +1239,13 @@ async function startForm(courseId = null, topicId = null) {
     submit: "Start",
     onSubmit: async (v) => {
       state.lastMode = v.mode;
-      const topic = v.topic_id ? Number(v.topic_id) : null;
-      await call(v.mode === "pomodoro" ? "pomo_start" : "timer_start", Number(v.course_id), topic);
+      const t = targetOf(v.target);
+      const topic = t.course_id && v.topic_id ? Number(v.topic_id) : null;
+      await call(v.mode === "pomodoro" ? "pomo_start" : "timer_start", t.course_id, topic, t.project_id);
     },
-    onChange: linkTopicPicker(courses),
+    onChange: linkTargetTopics(courses),
   });
+  if (!cid) $("#modal-root select[name=topic_id]").closest(".field").style.display = "none";
 }
 
 async function settingsForm() {
@@ -1286,8 +1420,14 @@ const actions = {
   "open-subject": (el) => go({ name: "subject", id: Number(el.dataset.id) }),
   "open-reading": (el) => go({ name: "reading", id: Number(el.dataset.id) }),
   "add-course": () => courseForm(),
-  "start-studying": (el) => startForm(el.dataset.course ? Number(el.dataset.course) : null, el.dataset.topic ? Number(el.dataset.topic) : null),
-  "log-time": (el) => sessionForm(el.dataset.course ? Number(el.dataset.course) : (state.view.name !== "overview" ? state.view.id : null)),
+  "start-studying": (el) => startForm(el.dataset.course ? Number(el.dataset.course) : null, el.dataset.topic ? Number(el.dataset.topic) : null,
+    el.dataset.project ? Number(el.dataset.project) : null),
+  "log-time": (el) => {
+    const inProject = state.view.name === "research";
+    sessionForm(el.dataset.course ? Number(el.dataset.course) : (!inProject && state.view.name !== "overview" ? state.view.id : null), null,
+      el.dataset.project ? Number(el.dataset.project) : (inProject ? state.view.id : null));
+  },
+  "drag": () => {},  // the handle's own click does nothing; dragging is handled in `sortable`
   settings: () => settingsForm(),
   "sign-in": () => signInForm(),
   "sign-up": () => signUpForm(),
@@ -1425,6 +1565,87 @@ document.addEventListener("click", (e) => {
   actions[el.dataset.act](el, e);
 });
 
+// A link in a note, question or reference opens in the computer's browser: following it inside this window
+// would replace the app with the web page.
+document.addEventListener("click", (e) => {
+  const link = e.target.closest("a[href]");
+  if (!link || e.defaultPrevented) return;
+  e.preventDefault();
+  call("open_link", link.getAttribute("href")).catch((err) => toast(err.message, true));
+}, true);
+
+// ---------- dragging to reorder ----------
+
+// Drag a card or row by its handle to a new place in its list. `[data-sortable]` names the list; each item
+// has data-id (and data-kind in the overview, where courses and projects mix). Pointer events rather than
+// HTML drag and drop, which behaves differently in each system's web view.
+const SORTED = {
+  // The active and finished lists share one order, so moving something back keeps its place.
+  overview: () => call("reorder", [...document.querySelectorAll("[data-sortable=overview] > [data-id]")]
+    .map((el) => ({ kind: el.dataset.kind, id: Number(el.dataset.id) }))),
+};
+
+document.addEventListener("pointerdown", (e) => {
+  const handle = e.target.closest(".drag-handle");
+  if (!handle || e.button !== 0) return;
+  const list = handle.closest("[data-sortable]");
+  const item = handle.closest("[data-id]");
+  if (!list || !item || item.parentElement !== list) return;
+  e.preventDefault();
+  const siblings = () => [...list.children].filter((x) => x.dataset.id);
+  const before = siblings().map((x) => x.dataset.id).join(",");
+  item.classList.add("dragging");
+  list.classList.add("sorting");
+  // Listen on the window, not the handle: moving the item in the page would drop a pointer capture.
+  const move = (ev) => {
+    const over = siblings().find((x) => {
+      if (x === item) return false;
+      const r = x.getBoundingClientRect();
+      return ev.clientY >= r.top && ev.clientY <= r.bottom && ev.clientX >= r.left && ev.clientX <= r.right;
+    });
+    if (!over) return;
+    const r = over.getBoundingClientRect();
+    const sideways = list.dataset.axis === "x";
+    const after = sideways ? ev.clientX > r.left + r.width / 2 : ev.clientY > r.top + r.height / 2;
+    list.insertBefore(item, after ? over.nextSibling : over);
+  };
+  const end = async () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+    item.classList.remove("dragging");
+    list.classList.remove("sorting");
+    const items = siblings();
+    if (items.map((x) => x.dataset.id).join(",") === before) return;
+    try {
+      await SORTED[list.dataset.sortable](items, list);
+      scheduleSync();
+    } catch (err) {
+      toast(err.message, true);
+    }
+    refresh();
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+});
+
+document.addEventListener("keydown", (e) => {
+  // Keyboard reordering: Alt + up/down on a focused handle.
+  const handle = e.target.closest?.(".drag-handle");
+  if (!handle || !e.altKey || !["ArrowUp", "ArrowDown"].includes(e.key)) return;
+  const list = handle.closest("[data-sortable]"), item = handle.closest("[data-id]");
+  if (!list || !item) return;
+  e.preventDefault();
+  const other = e.key === "ArrowUp" ? item.previousElementSibling : item.nextElementSibling;
+  if (!other || !other.dataset.id) return;
+  list.insertBefore(item, e.key === "ArrowUp" ? other : other.nextSibling);
+  SORTED[list.dataset.sortable]([...list.children].filter((x) => x.dataset.id), list)
+    .then(() => { scheduleSync(); return refresh(); })
+    .then(() => document.querySelector(`[data-sortable="${list.dataset.sortable}"] [data-id="${item.dataset.id}"] .drag-handle`)?.focus())
+    .catch((err) => toast(err.message, true));
+});
+
 document.addEventListener("change", (e) => {
   const el = e.target;
   if (el.dataset.change === "topic-status") act("set_topic_status", Number(el.dataset.id), el.value);
@@ -1444,9 +1665,9 @@ document.addEventListener("keydown", (e) => {
     if (document.querySelector(".menu")) closeMenu();
     else if (modalClose) modalClose();
     else if (state.view.name === "reading" || state.view.name === "exams") go({ name: "subject", id: state.view.id });
-    else if (state.view.name === "subject") go({ name: "overview" });
+    else if (state.view.name === "subject" || state.view.name === "research") go({ name: "overview" });
   }
-  if (e.key === "Enter" && e.target.classList?.contains("card")) actions["open-subject"](e.target);
+  if (e.key === "Enter" && e.target.classList?.contains("card")) actions[e.target.dataset.act](e.target);
 });
 
 // ---------- themes ----------
@@ -1474,7 +1695,7 @@ try { applyTheme(localStorage.getItem("studypal.theme") || "system"); } catch (e
 
 function start() {
   // #subject/3 or #reading/3 opens straight onto that page (handy when working on the interface).
-  const m = location.hash.match(/^#(subject|reading|exams)\/(\d+)$/);
+  const m = location.hash.match(/^#(subject|reading|exams|research)\/(\d+)$/);
   if (m) state.view = { name: m[1], id: Number(m[2]) };
   call("get_theme").then((name) => {
     if (name !== activeTheme.name) setTheme(name, false);

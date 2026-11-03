@@ -18,6 +18,8 @@
   --ok-soft: #e1f2e8;
   --shadow: 0 1px 2px rgba(20, 20, 30, .05), 0 4px 16px rgba(20, 20, 30, .05);
   --radius: 12px;
+  /* Research time in the week chart: a hue between the accent and red, so it follows every theme. */
+  --research: color-mix(in srgb, var(--accent) 50%, var(--danger));
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -235,6 +237,10 @@ input[type=checkbox].check:checked::after { content: ""; width: 5px; height: 9px
 .week .bar-wrap { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
 .week .bar { width: 100%; max-width: 28px; border-radius: 5px 5px 2px 2px; background: var(--accent); opacity: .75; min-height: 2px; }
 .week .bar.zero { background: var(--track); opacity: 1; }
+.week .bar-stack { width: 100%; max-width: 28px; display: flex; flex-direction: column; gap: 1px; border-radius: 5px 5px 2px 2px; overflow: hidden; }
+.week .bar-stack .bar { max-width: none; border-radius: 0; min-height: 0; }
+.week .bar.research { background: var(--research); opacity: .9; flex: none; }
+.week-legend { padding: 0 16px 12px; margin-top: 0; }
 .week .bar-val { font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .week-labels { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; padding: 0 16px 14px; text-align: center; font-size: 12px; color: var(--muted); }
 .week-labels .now { color: var(--text); font-weight: 650; }
@@ -549,4 +555,127 @@ form.working .field, form.working [data-modal=cancel] { opacity: .5; pointer-eve
   .q, .file-chips, .exam-notes, .exam-intro { padding-left: 16px; margin-left: 16px; }
   .q { margin-left: 0; }
   .q::before { left: 6px; }
+}
+
+/* ---------- dragging to reorder ---------- */
+.drag-handle {
+  display: grid; place-items: center; width: 20px; height: 28px; padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: var(--faint); cursor: grab; touch-action: none; opacity: 0; transition: opacity .12s;
+}
+.drag-handle:hover { background: var(--surface-2); color: var(--text); }
+.drag-handle:focus-visible, *:hover > .drag-handle, .sorting .drag-handle { opacity: 1; }
+.card > .drag-handle { position: absolute; left: -11px; top: 50%; transform: translateY(-50%); background: var(--surface); border: 1px solid var(--border); }
+.row > .drag-handle { margin-left: -12px; margin-right: -6px; flex: none; }
+.sorting, .sorting * { cursor: grabbing !important; user-select: none; }
+.dragging { opacity: .55; box-shadow: 0 0 0 2px var(--accent) !important; }
+.card.dragging { transform: scale(.99); }
+
+/* ---------- research card ---------- */
+.card.research { background: color-mix(in srgb, var(--course) 5%, var(--surface)); border-style: dashed; border-color: color-mix(in srgb, var(--course) 35%, var(--border)); }
+.card.research:hover { border-color: var(--course); }
+.card.research::before { background: repeating-linear-gradient(180deg, var(--course) 0 6px, transparent 6px 9px); }
+.card.research.s-paused, .card.research.s-idea { opacity: .85; }
+.kind-label {
+  display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 1px 8px 1px 6px; border-radius: 99px;
+  font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--course); background: color-mix(in srgb, var(--course) 13%, transparent);
+}
+.kind-label svg { width: 12px; height: 12px; }
+.kind-label.big { font-size: 12px; padding: 3px 10px 3px 8px; }
+.kind-label.big svg { width: 14px; height: 14px; }
+.task-bar { display: flex; gap: 3px; height: 8px; margin-top: 12px; }
+.task-bar i { flex: 1; border-radius: 3px; background: var(--track); }
+.task-bar i.on { background: var(--course); }
+.card-tags .tag { font-size: 11px; padding: 0 6px; margin-left: 2px; }
+.status-tag.st-active { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.status-tag.st-paused { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.status-tag.st-done { color: var(--muted); }
+
+/* ---------- research page ---------- */
+.research-head .title-line h1 { overflow-wrap: anywhere; }
+.status-pick {
+  appearance: none; -webkit-appearance: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 99px; padding: 3px 24px 3px 10px; color: var(--muted);
+  background: var(--surface-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 9px center;
+}
+.status-pick.st-active, .status-pick.rs-read { background-color: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.status-pick.st-paused { background-color: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.status-pick.rs-reading { background-color: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.row .status-pick { flex: none; min-width: 92px; }
+.research-hero .tags-line { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.project-description { margin-top: 8px; }
+.link-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.link-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 8px; font: inherit; font-size: 13px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; max-width: 240px;
+}
+.link-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-chip:hover { border-color: var(--course, var(--accent)); }
+.link-chip.add { color: var(--muted); border-style: dashed; }
+.link-chip .link-icon { color: var(--course, var(--accent)); flex: none; }
+.research-body { max-width: 1280px; margin: 0 auto; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 14px; overflow-x: auto; }
+.tab {
+  font: inherit; font-weight: 550; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  background: none; color: var(--muted); cursor: pointer; white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+.tab.on { color: var(--text); border-bottom-color: var(--course); }
+.tab .count { font-size: 12px; color: var(--faint); font-weight: 500; margin-left: 2px; }
+.tab-panel { min-height: 320px; }
+.tab-head { padding: 12px 16px 0; }
+.small-seg label { padding: 3px 10px; font-size: 13px; }
+.filter-line { padding: 0 16px 6px; }
+
+.notes { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 460px; }
+.note-list { border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; }
+.note-tools { display: flex; gap: 6px; padding: 12px; border-bottom: 1px solid var(--border); }
+.note-tools input { flex: 1; min-width: 0; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2); color: var(--text); font: inherit; font-size: 13px; }
+.note-tools input:focus { border-color: var(--accent); outline: none; }
+.note-list ul { list-style: none; margin: 0; padding: 6px; overflow-y: auto; max-height: 640px; }
+.note-item { padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.note-item:hover { background: var(--surface-2); }
+.note-item.on { background: color-mix(in srgb, var(--course) 12%, transparent); }
+.note-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-snip { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-when { font-size: 11px; color: var(--faint); margin-top: 2px; }
+.note-none { padding: 12px 16px; margin: 0; }
+.note-editor { display: flex; flex-direction: column; min-width: 0; padding: 12px 16px 10px; }
+.note-bar { display: flex; align-items: center; gap: 10px; }
+.note-title { flex: 1; min-width: 0; font: inherit; font-size: 20px; font-weight: 650; border: 0; background: none; color: var(--text); padding: 4px 0; }
+.note-title:focus { outline: none; box-shadow: none; }
+.note-body {
+  flex: 1; min-height: 380px; margin-top: 8px; border: 1px solid transparent !important; background: var(--surface-2);
+  font-size: 14px; line-height: 1.6; resize: none;
+}
+.note-body:focus { border-color: var(--border) !important; box-shadow: none !important; }
+.note-preview { flex: 1; min-height: 380px; margin-top: 8px; padding: 2px 10px; cursor: text; }
+.note-foot { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--faint); padding-top: 8px; }
+.note-empty { margin: auto; max-width: 420px; text-align: center; color: var(--muted); }
+
+.journal { list-style: none; margin: 0; padding: 4px 16px 12px; }
+.entry { position: relative; display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 16px; padding: 10px 0; border-top: 1px solid var(--border); }
+.entry:first-child { border-top: 0; }
+.entry-day { font-weight: 600; font-size: 13px; padding-top: 9px; color: var(--course); white-space: nowrap; }
+.entry-body > :first-child { margin-top: 6px; }
+.entry .row-actions { position: absolute; right: 0; top: 8px; display: none; gap: 2px; background: var(--surface); }
+.entry:hover .row-actions, .entry:focus-within .row-actions { display: flex; }
+
+.task-add { padding: 4px 16px 6px; }
+.task-add input { width: 100%; height: 36px; padding: 0 12px; border: 1px dashed var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; }
+.task-add input:focus { border-style: solid; border-color: var(--accent); outline: none; }
+.annotation { font-size: 13px; color: var(--muted); margin-top: 2px; white-space: pre-wrap; }
+.source-row, .task-row { align-items: flex-start; }
+.source-row .status-pick, .task-row .check { margin-top: 2px; }
+.source-row > .drag-handle, .task-row > .drag-handle { margin-top: -4px; }
+.link-badge { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; flex: none;
+  color: var(--course); background: color-mix(in srgb, var(--course) 12%, transparent); }
+.suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 16px 16px; }
+
+@media (max-width: 760px) {
+  .notes { grid-template-columns: 1fr; }
+  .note-list { border-right: 0; border-bottom: 1px solid var(--border); }
+  .note-list ul { max-height: 220px; }
+  .entry { grid-template-columns: 1fr; gap: 0; }
 }

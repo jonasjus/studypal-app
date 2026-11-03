@@ -6,11 +6,11 @@ import atexit
 import os
 import shutil
 import tempfile
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
-from .models import (Course, Deadline, DeadlineKind, Exam, ExamQuestion, Priority, Session, Source, Topic, TopicStatus,
-                     WeakSpot)
+from .models import (Course, Deadline, DeadlineKind, Exam, ExamQuestion, Priority, Project, ProjectEntry, ProjectLink,
+                     ProjectNote, ProjectSource, ProjectTask, Session, Source, Topic, TopicStatus, WeakSpot)
 from .storage import Store
 
 NS, IP, RV, CF = TopicStatus.NOT_STARTED, TopicStatus.IN_PROGRESS, TopicStatus.REVIEWED, TopicStatus.CONFIDENT
@@ -115,6 +115,45 @@ EXAMS = [
 ]
 
 
+PROJECT = {
+    "title": "Uncertainty in small language models",
+    "description": "Master's thesis: do **calibration** methods that work for large models still help below 1B "
+                   "parameters? Supervisor meetings every other Thursday.",
+    "tags": ["thesis", "nlp", "calibration"],
+    "notes": [
+        ("Research questions", "1. Does temperature scaling stay well calibrated after fine-tuning?\n"
+                               "2. How does the expected calibration error\n\n"
+                               "$$\\mathrm{ECE} = \\sum_{m=1}^{M} \\frac{|B_m|}{n} \\left| \\mathrm{acc}(B_m) - "
+                               "\\mathrm{conf}(B_m) \\right|$$\n\nchange with model size?", 6),
+        ("Meeting 31 Oct", "- Use **three seeds** per run\n- Look at Guo et al. for the reliability diagrams\n"
+                           "- Next: baseline on SST-2", 3),
+    ],
+    "entries": [
+        (5, "Set up the training repo and a Colab notebook. Baseline runs on a T4 in about 40 minutes."),
+        (2, "Baseline on SST-2: accuracy 0.91, **ECE 0.064**. Temperature scaling brings it to 0.021."),
+        (0, "Started the label-smoothing runs. Seed 2 diverged; lowered the learning rate to `2e-5`."),
+    ],
+    "links": [
+        ("Thesis draft", "https://www.overleaf.com/project/demo", ""),
+        ("Zotero library", "zotero://select/library/collections/THESIS", ""),
+        ("Code", "https://github.com/example/calibration", ""),
+        ("Training notebook", "https://colab.research.google.com/drive/demo", ""),
+        ("SST-2 dataset", "https://huggingface.co/datasets/stanfordnlp/sst2", ""),
+        ("Google Scholar", "https://scholar.google.com/", ""),
+    ],
+    "sources": [
+        ("On calibration of modern neural networks", "Guo, Chuan; Pleiss, Geoff; Sun, Yu; Weinberger, Kilian Q.",
+         "2017", "https://arxiv.org/abs/1706.04599", "read", "Temperature scaling; reliability diagrams."),
+        ("When does label smoothing help?", "Müller, Rafael; Kornblith, Simon; Hinton, Geoffrey", "2019",
+         "https://arxiv.org/abs/1906.02629", "reading", ""),
+        ("Calibration of pre-trained transformers", "Desai, Shrey; Durrett, Greg", "2020",
+         "10.18653/v1/2020.emnlp-main.21", "to_read", ""),
+    ],
+    "tasks": [("Baseline on SST-2", True), ("Label smoothing runs (3 seeds)", False),
+              ("Reliability diagrams for chapter 4", False), ("Send draft outline to supervisor", False)],
+}
+
+
 def seed(store: Store, now: datetime | None = None) -> None:
     now = (now or datetime.now()).replace(second=0, microsecond=0)
     today = now.date()
@@ -179,6 +218,38 @@ def seed(store: Store, now: datetime | None = None) -> None:
             titles = sorted(t for (c, t) in started if c == code)
             topic = titles[(day + i) % len(titles)]
             store.log_session(Session(courses[code].id, start, minutes + (day % 4) * 5, topic_ids[(code, topic)]))
+
+
+    seed_project(store, now)
+
+
+def seed_project(store: Store, now: datetime) -> None:
+    today = now.date()
+    d = PROJECT
+    p = store.add_project(Project(d["title"], d["description"], tags=d["tags"], start_on=today - timedelta(days=40),
+                                  end_on=today + timedelta(days=120), color=store.next_color()))
+    for title, body, ago in d["notes"]:
+        note = store.add_note(ProjectNote(p.id, title, body, created_at=now - timedelta(days=ago + 2)))
+        # As if last edited `ago` days back, in the sync column's UTC format.
+        edited = (now - timedelta(days=ago)).astimezone().astimezone(timezone.utc)
+        store.conn.execute("update project_note set updated_at = ? where id = ?",
+                           (edited.strftime("%Y-%m-%dT%H:%M:%S.000Z"), note.id))
+    for ago, body in d["entries"]:
+        store.add_entry(ProjectEntry(p.id, today - timedelta(days=ago), body))
+    for name, url, category in d["links"]:
+        store.add_link(ProjectLink(p.id, name, url, category))
+    for title, authors, year, link, status, annotation in d["sources"]:
+        store.add_project_source(ProjectSource(p.id, title, authors, year,
+                                               f"https://doi.org/{link}" if link.startswith("10.") else link,
+                                               status, annotation))
+    for text, done in d["tasks"]:
+        task = store.add_task(ProjectTask(p.id, text))
+        if done:
+            store.toggle_task(task.id, now - timedelta(days=2))
+    for day, minutes in ((6, 80), (5, 45), (3, 60), (2, 90), (1, 40), (0, 35)):
+        start = datetime.combine(today - timedelta(days=day), time(16, 30))
+        if start <= now:
+            store.log_session(Session(None, start, minutes, note="Experiments", project_id=p.id))
 
 
 def temporary_store_path() -> Path:

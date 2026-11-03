@@ -12,6 +12,7 @@ from pathlib import Path
 from .logic.dates import format_date, format_datetime
 from .logic.stats import format_minutes
 from .logic.timeline import cram_progress
+from .models import Project
 from .storage import Store
 
 
@@ -71,12 +72,42 @@ def to_markdown(store: Store, now: datetime | None = None) -> str:
                       [[format_datetime(s.started_at), s.minutes,
                         topics_by_id[s.topic_id].title if s.topic_id in topics_by_id else "", s.note]
                        for s in store.list_sessions(course.id)])
+    for project in store.list_projects():
+        out += _project_markdown(store, project)
     standalone = [d for d in store.list_deadlines(include_done=True) if d.course_id is None]
     if standalone:
         out += ["## Other deadlines", ""]
         out += _table(["Due", "Deadline", "Type", "Done"],
                       [[format_datetime(d.due_at), d.title, d.kind.value, "yes" if d.done else ""] for d in standalone])
     return "\n".join(out).rstrip() + "\n"
+
+
+def _project_markdown(store: Store, project: Project) -> list[str]:
+    dates = " → ".join(format_date(d) for d in (project.start_on, project.end_on) if d)
+    out = [f"## Research · {project.title} ({project.status})", "",
+           " · ".join(x for x in (dates, ", ".join(project.tags),
+                                  f"{format_minutes(store.project_minutes(project.id))} worked") if x), ""]
+    if project.description:
+        out += [project.description, ""]
+    tasks = store.list_tasks(project.id)  # type: ignore[arg-type]
+    if tasks:
+        out += ["### Tasks", ""] + [f"- [{'x' if t.done else ' '}] {t.text}" for t in tasks] + [""]
+    links = store.list_links(project.id)  # type: ignore[arg-type]
+    if links:
+        out += ["### Shortcuts", ""] + [f"- [{x.name}]({x.url})" for x in links] + [""]
+    sources = store.list_project_sources(project.id)  # type: ignore[arg-type]
+    if sources:
+        out += ["### References", ""]
+        out += _table(["Title", "Authors", "Year", "Status", "Link", "Annotation"],
+                      [[x.title, x.authors, x.year, x.status.replace("_", " "), x.link, x.annotation] for x in sources])
+    entries = store.list_entries(project.id)  # type: ignore[arg-type]
+    if entries:
+        out += ["### Journal", ""]
+        for e in entries:
+            out += [f"**{format_date(e.day)}**", "", e.body, ""]
+    for n in store.list_notes(project.id):  # type: ignore[arg-type]
+        out += [f"### Note: {n.title or 'Untitled'}", "", n.body, ""]
+    return out
 
 
 def to_csv(store: Store, folder: Path) -> list[Path]:

@@ -10,7 +10,7 @@ from .logic.merge import LINKS, TABLES, Dataset, empty
 
 # Fields stored for each table (besides uid, updated and links).
 FIELDS: dict[str, list[str]] = {
-    "course": ["name", "code", "cram_start", "exam_date", "color", "notes", "done"],
+    "course": ["name", "code", "cram_start", "exam_date", "color", "notes", "done", "position"],
     "topic": ["title", "status", "confidence", "last_studied"],
     "source": ["title", "author", "position", "kind", "year", "publisher", "edition", "journal", "volume", "issue",
                "pages", "link"],
@@ -22,6 +22,13 @@ FIELDS: dict[str, list[str]] = {
     "exam": ["title", "kind", "taken_on", "score", "notes", "created_at"],
     "exam_file": ["name", "key", "mime", "size", "role"],
     "exam_question": ["number", "prompt", "answer", "marks", "result", "note", "why", "position"],
+    "project": ["title", "description", "status", "tags", "start_on", "end_on", "color", "position", "created_at"],
+    "project_note": ["title", "body", "created_at"],
+    "project_entry": ["day", "body"],
+    "project_link": ["name", "url", "category", "position"],
+    "project_source": ["title", "authors", "year", "link", "status", "annotation", "position"],
+    "project_task": ["text", "done", "done_at", "position"],
+    "project_session": ["started_at", "minutes", "note"],
 }
 
 

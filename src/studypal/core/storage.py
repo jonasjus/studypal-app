@@ -25,7 +25,16 @@ from .models import (
     Exam,
     ExamFile,
     ExamQuestion,
+    LINK_CATEGORIES,
+    PROJECT_STATUSES,
+    READING_STATUSES,
     Priority,
+    Project,
+    ProjectEntry,
+    ProjectLink,
+    ProjectNote,
+    ProjectSource,
+    ProjectTask,
     Section,
     Session,
     Source,
@@ -44,6 +53,12 @@ class StorageError(Exception):
 
 
 # Each entry upgrades the schema by one version; PRAGMA user_version records how far we are.
+
+PROJECT_TABLES = ("project", "project_note", "project_entry", "project_link", "project_source", "project_task",
+                  "project_session")
+# The parts of a project that keep an order you can change by dragging.
+ORDERED = {"link": "project_link", "source": "project_source", "task": "project_task"}
+
 
 def _sync_columns(table: str) -> str:
     """uid and updated_at for a table added after the sync migration, filled in by triggers the same way."""
@@ -419,6 +434,116 @@ MIGRATIONS: list[str] = [
     );
     create index exam_question_exam on exam_question(exam_id);
     """ + "".join(_sync_columns(t) for t in ("exam", "exam_file", "exam_question")),
+    # StudyPal only: research projects, which sit in the overview's list with the courses (in an order you
+    # choose by dragging), with notes, a journal, shortcuts, references, tasks and their own study time.
+    # Project time has its own table so older versions syncing the same account never see a session
+    # without a course. The timer and Pomodoro (local only, not synced) are rebuilt to run for either.
+    """
+    alter table course add column position integer default 0;
+
+    create table project (
+        id           integer primary key,
+        title        text not null,
+        description  text default '',
+        status       text not null default 'active',
+        tags         text default '',
+        start_on     text,
+        end_on       text,
+        color        text not null,
+        position     integer default 0,
+        created_at   text
+    );
+
+    create table project_note (
+        id          integer primary key,
+        project_id  integer not null references project(id) on delete cascade,
+        title       text default '',
+        body        text default '',
+        created_at  text
+    );
+    create index project_note_project on project_note(project_id);
+
+    create table project_entry (
+        id          integer primary key,
+        project_id  integer not null references project(id) on delete cascade,
+        day         text not null,
+        body        text default ''
+    );
+    create index project_entry_project on project_entry(project_id);
+
+    create table project_link (
+        id          integer primary key,
+        project_id  integer not null references project(id) on delete cascade,
+        name        text not null,
+        url         text not null,
+        category    text default '',
+        position    integer default 0
+    );
+    create index project_link_project on project_link(project_id);
+
+    create table project_source (
+        id          integer primary key,
+        project_id  integer not null references project(id) on delete cascade,
+        title       text not null,
+        authors     text default '',
+        year        text default '',
+        link        text default '',
+        status      text default 'to_read',
+        annotation  text default '',
+        position    integer default 0
+    );
+    create index project_source_project on project_source(project_id);
+
+    create table project_task (
+        id          integer primary key,
+        project_id  integer not null references project(id) on delete cascade,
+        text        text not null,
+        done        integer default 0,
+        done_at     text,
+        position    integer default 0
+    );
+    create index project_task_project on project_task(project_id);
+
+    create table project_session (
+        id          integer primary key,
+        project_id  integer not null references project(id) on delete cascade,
+        started_at  text not null,
+        minutes     integer not null check (minutes > 0),
+        note        text default ''
+    );
+    create index project_session_started on project_session(started_at);
+
+    create table active_timer_new (
+        id          integer primary key check (id = 1),
+        course_id   integer references course(id) on delete cascade,
+        project_id  integer references project(id) on delete cascade,
+        topic_id    integer references topic(id) on delete set null,
+        started_at  text not null,
+        check ((course_id is null) <> (project_id is null))
+    );
+    insert into active_timer_new (id, course_id, topic_id, started_at)
+        select id, course_id, topic_id, started_at from active_timer;
+    drop table active_timer;
+    alter table active_timer_new rename to active_timer;
+
+    create table pomodoro_run_new (
+        id                integer primary key check (id = 1),
+        course_id         integer references course(id) on delete cascade,
+        project_id        integer references project(id) on delete cascade,
+        topic_id          integer references topic(id) on delete set null,
+        phase             text not null check (phase in ('focus', 'short_break', 'long_break', 'ready')),
+        phase_started_at  text not null,
+        block_started_at  text not null,
+        completed         integer not null default 0,
+        paused_at         text,
+        note              text not null default '',
+        check ((course_id is null) <> (project_id is null))
+    );
+    insert into pomodoro_run_new (id, course_id, topic_id, phase, phase_started_at, block_started_at, completed, paused_at, note)
+        select id, course_id, topic_id, phase, phase_started_at, block_started_at, completed, paused_at, note from pomodoro_run;
+    drop table pomodoro_run;
+    alter table pomodoro_run_new rename to pomodoro_run;
+    """ + "".join(_sync_columns(t) for t in PROJECT_TABLES),
 ]
 
 
@@ -432,6 +557,21 @@ def _statements(script: str) -> list[str]:
                 out.append(buf.strip())
             buf = ""
     return out
+
+
+def _split_tags(text: str) -> list[str]:
+    """"ml, Thesis ,ml" -> ["ml", "Thesis"]: trimmed, no blanks, no repeats (ignoring case)."""
+    out: list[str] = []
+    for tag in text.split(","):
+        tag = tag.strip()
+        if tag and tag.lower() not in (t.lower() for t in out):
+            out.append(tag)
+    return out
+
+
+def _utc(value: str) -> datetime:
+    """A sync timestamp (UTC, "2026-11-03T12:00:00.000Z") as local time, to the minute."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().replace(tzinfo=None, second=0, microsecond=0)
 
 
 def _d(value: str | None) -> date | None:
@@ -511,11 +651,13 @@ class Store:
         return Course(
             id=r["id"], name=r["name"], code=r["code"], cram_start=_d(r["cram_start"]),
             exam_date=_d(r["exam_date"]), color=r["color"], notes=r["notes"], done=bool(r["done"]),
+            position=r["position"] or 0,
         )
 
     def next_color(self) -> str:
-        """The first palette colour no course uses yet (cycles once all are taken)."""
+        """The first palette colour no course or project uses yet (cycles once all are taken)."""
         used = [r[0] for r in self.conn.execute("select color from course order by id")]
+        used += [r[0] for r in self.conn.execute("select color from project order by id")]
         for color in COURSE_COLORS:
             if color not in used:
                 return color
@@ -526,10 +668,12 @@ class Store:
         self._check_course(course)
         try:
             with self._tx() as c:
+                course.position = course.position or self._next_place(c)
                 cur = c.execute(
-                    "insert into course (name, code, cram_start, exam_date, color, notes, done) values (?, ?, ?, ?, ?, ?, ?)",
+                    "insert into course (name, code, cram_start, exam_date, color, notes, done, position)"
+                    " values (?, ?, ?, ?, ?, ?, ?, ?)",
                     (course.name.strip(), course.code.strip(), _iso(course.cram_start), _iso(course.exam_date),
-                     course.color, course.notes, int(course.done)),
+                     course.color, course.notes, int(course.done), course.position),
                 )
                 course.id = cur.lastrowid
                 c.execute(
@@ -850,6 +994,11 @@ class Store:
 
     @staticmethod
     def _insert_session(c: sqlite3.Connection, session: Session) -> None:
+        if session.project_id is not None:
+            cur = c.execute("insert into project_session (project_id, started_at, minutes, note) values (?, ?, ?, ?)",
+                            (session.project_id, _iso(session.started_at), session.minutes, session.note.strip()))
+            session.id = cur.lastrowid
+            return
         cur = c.execute(
             "insert into session (course_id, topic_id, started_at, minutes, note) values (?, ?, ?, ?, ?)",
             (session.course_id, session.topic_id, _iso(session.started_at), session.minutes, session.note.strip()),
@@ -866,6 +1015,10 @@ class Store:
         if session.minutes <= 0:
             raise StorageError("A session needs at least one minute.")
         with self._tx() as c:
+            if session.project_id is not None:
+                c.execute("update project_session set started_at = ?, minutes = ?, note = ? where id = ?",
+                          (_iso(session.started_at), session.minutes, session.note.strip(), session.id))
+                return session
             c.execute(
                 "update session set topic_id = ?, started_at = ?, minutes = ?, note = ? where id = ?",
                 (session.topic_id, _iso(session.started_at), session.minutes, session.note.strip(), session.id),
@@ -911,24 +1064,34 @@ class Store:
 
     # ---------- the running timer ----------
 
-    def start_timer(self, course_id: int, topic_id: int | None = None, now: datetime | None = None) -> ActiveTimer:
+    def start_timer(self, course_id: int | None, topic_id: int | None = None, now: datetime | None = None,
+                    project_id: int | None = None) -> ActiveTimer:
+        """Time a course (with an optional topic) or, with project_id instead, a research project."""
         if self.get_timer() is not None:
             raise StorageError("A study timer is already running. Stop it first.")
         if self.get_pomodoro() is not None:
             raise StorageError("A Pomodoro is running. Stop it before starting a plain timer.")
-        timer = ActiveTimer(course_id=course_id, topic_id=topic_id, started_at=(now or datetime.now()).replace(microsecond=0))
+        self._check_target(course_id, project_id)
+        timer = ActiveTimer(course_id=course_id, topic_id=topic_id if course_id else None, project_id=project_id,
+                            started_at=(now or datetime.now()).replace(microsecond=0))
         with self._tx() as c:
             c.execute(
-                "insert into active_timer (id, course_id, topic_id, started_at) values (1, ?, ?, ?)",
-                (course_id, topic_id, timer.started_at.isoformat(timespec="seconds")),
+                "insert into active_timer (id, course_id, project_id, topic_id, started_at) values (1, ?, ?, ?, ?)",
+                (course_id, project_id, timer.topic_id, timer.started_at.isoformat(timespec="seconds")),
             )
         return timer
+
+    @staticmethod
+    def _check_target(course_id: int | None, project_id: int | None) -> None:
+        if (course_id is None) == (project_id is None):
+            raise StorageError("Pick one subject or research project to work on.")
 
     def get_timer(self) -> ActiveTimer | None:
         r = self.conn.execute("select * from active_timer where id = 1").fetchone()
         if not r:
             return None
-        return ActiveTimer(course_id=r["course_id"], topic_id=r["topic_id"], started_at=_dt(r["started_at"]))
+        return ActiveTimer(course_id=r["course_id"], topic_id=r["topic_id"], started_at=_dt(r["started_at"]),
+                           project_id=r["project_id"])
 
     def stop_timer(self, now: datetime | None = None, note: str = "") -> Session | None:
         """Stop the running timer and log it. Returns None (and logs nothing) if it ran under a minute."""
@@ -939,7 +1102,7 @@ class Store:
         session = None
         if minutes >= 1:
             session = Session(course_id=timer.course_id, topic_id=timer.topic_id, started_at=timer.started_at,
-                              minutes=minutes, note=note)
+                              minutes=minutes, note=note, project_id=timer.project_id)
         # Clearing the timer and logging the session happen together, so neither can be lost.
         with self._tx() as c:
             c.execute("delete from active_timer where id = 1")
@@ -962,7 +1125,7 @@ class Store:
         return PomodoroRun(
             course_id=r["course_id"], topic_id=r["topic_id"], phase=PomoPhase(r["phase"]),
             phase_started_at=_dt(r["phase_started_at"]), block_started_at=_dt(r["block_started_at"]),
-            completed=r["completed"], paused_at=_dt(r["paused_at"]), note=r["note"],
+            completed=r["completed"], paused_at=_dt(r["paused_at"]), note=r["note"], project_id=r["project_id"],
         )
 
     @staticmethod
@@ -972,10 +1135,10 @@ class Store:
 
         c.execute(
             "insert or replace into pomodoro_run"
-            " (id, course_id, topic_id, phase, phase_started_at, block_started_at, completed, paused_at, note)"
-            " values (1, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (run.course_id, run.topic_id, run.phase.value, ts(run.phase_started_at), ts(run.block_started_at),
-             run.completed, ts(run.paused_at), run.note),
+            " (id, course_id, project_id, topic_id, phase, phase_started_at, block_started_at, completed, paused_at, note)"
+            " values (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (run.course_id, run.project_id, run.topic_id, run.phase.value, ts(run.phase_started_at),
+             ts(run.block_started_at), run.completed, ts(run.paused_at), run.note),
         )
 
     def _log_blocks(self, c: sqlite3.Connection, run: PomodoroRun, blocks: list[pomo.FinishedBlock]) -> list[Session]:
@@ -983,18 +1146,19 @@ class Store:
         for b in blocks:
             note = f"Pomodoro {b.number}" + (" (stopped early)" if b.partial else "") + (f" · {run.note}" if run.note else "")
             session = Session(course_id=run.course_id, topic_id=run.topic_id, started_at=b.started_at,
-                              minutes=b.minutes, note=note)
+                              minutes=b.minutes, note=note, project_id=run.project_id)
             self._insert_session(c, session)
             sessions.append(session)
         return sessions
 
-    def start_pomodoro(self, course_id: int, topic_id: int | None = None, now: datetime | None = None,
-                       note: str = "") -> PomodoroRun:
+    def start_pomodoro(self, course_id: int | None, topic_id: int | None = None, now: datetime | None = None,
+                       note: str = "", project_id: int | None = None) -> PomodoroRun:
         if self.get_pomodoro() is not None:
             raise StorageError("A Pomodoro is already running. Stop it first.")
         if self.get_timer() is not None:
             raise StorageError("A study timer is running. Stop it before starting a Pomodoro.")
-        run = pomo.start(course_id, now or datetime.now(), topic_id, note.strip())
+        self._check_target(course_id, project_id)
+        run = pomo.start(course_id, now or datetime.now(), topic_id if course_id else None, note.strip(), project_id)
         with self._tx() as c:
             self._write_pomodoro(c, run)
         return run
@@ -1456,6 +1620,336 @@ class Store:
     def list_questions(self, exam_id: int) -> list[ExamQuestion]:
         rows = self.conn.execute("select * from exam_question where exam_id = ? order by position, id", (exam_id,))
         return [self._question(r) for r in rows]
+
+    # ---------- research projects ----------
+
+    def _next_place(self, c: sqlite3.Connection) -> int:
+        """Where a new course or project goes in the overview's list: last, once you've put the list in an
+        order of your own; until then 0, so courses keep listing soonest exam first."""
+        top = c.execute("select max(coalesce(position, 0)) from (select position from course"
+                        " union all select position from project)").fetchone()[0] or 0
+        return top + 1 if top else 0
+
+    def reorder(self, items: list[tuple[str, int]]) -> None:
+        """Put the overview's list in this order: [("course", id) or ("project", id), ...]."""
+        with self._tx() as c:
+            for place, (kind, item_id) in enumerate(items, start=1):
+                if kind not in ("course", "project"):
+                    raise StorageError("Only subjects and research projects can be moved.")
+                c.execute(f"update {kind} set position = ? where id = ? and coalesce(position, 0) != ?",
+                          (place, item_id, place))
+
+    @staticmethod
+    def _project(r: sqlite3.Row) -> Project:
+        return Project(id=r["id"], title=r["title"], description=r["description"] or "", status=r["status"] or "active",
+                       tags=_split_tags(r["tags"] or ""), start_on=_d(r["start_on"]), end_on=_d(r["end_on"]),
+                       color=r["color"], position=r["position"] or 0,
+                       created_at=_dt(r["created_at"]) or datetime.now().replace(second=0, microsecond=0))
+
+    @staticmethod
+    def _check_project(p: Project) -> None:
+        if not p.title.strip():
+            raise StorageError("Give the project a title.")
+        if p.status not in PROJECT_STATUSES:
+            raise StorageError("Pick a status: idea, active, paused or done.")
+        if p.start_on and p.end_on and p.end_on < p.start_on:
+            raise StorageError("The target date can't be before the start.")
+
+    def add_project(self, p: Project) -> Project:
+        self._check_project(p)
+        with self._tx() as c:
+            p.position = p.position or self._next_place(c)
+            cur = c.execute("insert into project (title, description, status, tags, start_on, end_on, color, position,"
+                            " created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (p.title.strip(), p.description.strip(), p.status, ", ".join(p.tags), _iso(p.start_on),
+                             _iso(p.end_on), p.color, p.position, _iso(p.created_at)))
+            p.id = cur.lastrowid
+        return p
+
+    def update_project(self, p: Project) -> Project:
+        self._check_project(p)
+        with self._tx() as c:
+            cur = c.execute("update project set title = ?, description = ?, status = ?, tags = ?, start_on = ?, end_on = ?,"
+                            " color = ? where id = ?",
+                            (p.title.strip(), p.description.strip(), p.status, ", ".join(p.tags), _iso(p.start_on),
+                             _iso(p.end_on), p.color, p.id))
+            if cur.rowcount == 0:
+                raise StorageError("That project no longer exists.")
+        return p
+
+    def set_project_status(self, project_id: int, status: str) -> Project:
+        p = self.get_project(project_id)
+        if p is None:
+            raise StorageError("That project no longer exists.")
+        p.status = status
+        return self.update_project(p)
+
+    def delete_project(self, project_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from project where id = ?", (project_id,))
+
+    def get_project(self, project_id: int) -> Project | None:
+        r = self.conn.execute("select * from project where id = ?", (project_id,)).fetchone()
+        return self._project(r) if r else None
+
+    def list_projects(self) -> list[Project]:
+        """In the order they were added (the overview sorts them in with the courses)."""
+        return [self._project(r) for r in self.conn.execute("select * from project order by created_at, uid")]
+
+    # notes
+
+    @staticmethod
+    def _note(r: sqlite3.Row) -> ProjectNote:
+        updated = r["updated_at"]
+        return ProjectNote(id=r["id"], project_id=r["project_id"], title=r["title"] or "", body=r["body"] or "",
+                           created_at=_dt(r["created_at"]) or datetime.now().replace(second=0, microsecond=0),
+                           updated_at=_utc(updated) if updated else None)
+
+    def add_note(self, n: ProjectNote) -> ProjectNote:
+        with self._tx() as c:
+            cur = c.execute("insert into project_note (project_id, title, body, created_at) values (?, ?, ?, ?)",
+                            (n.project_id, n.title.strip(), n.body, _iso(n.created_at)))
+            n.id = cur.lastrowid
+        return self.get_note(n.id)  # type: ignore[arg-type,return-value]
+
+    def update_note(self, n: ProjectNote) -> ProjectNote:
+        with self._tx() as c:
+            cur = c.execute("update project_note set title = ?, body = ? where id = ?", (n.title.strip(), n.body, n.id))
+            if cur.rowcount == 0:
+                raise StorageError("That note no longer exists.")
+        return self.get_note(n.id)  # type: ignore[arg-type,return-value]
+
+    def delete_note(self, note_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from project_note where id = ?", (note_id,))
+
+    def get_note(self, note_id: int) -> ProjectNote | None:
+        r = self.conn.execute("select * from project_note where id = ?", (note_id,)).fetchone()
+        return self._note(r) if r else None
+
+    def list_notes(self, project_id: int) -> list[ProjectNote]:
+        """Most recently changed first."""
+        rows = self.conn.execute("select * from project_note where project_id = ? order by updated_at desc, id desc",
+                                 (project_id,))
+        return [self._note(r) for r in rows]
+
+    # journal
+
+    @staticmethod
+    def _entry(r: sqlite3.Row) -> ProjectEntry:
+        return ProjectEntry(id=r["id"], project_id=r["project_id"], day=_d(r["day"]), body=r["body"] or "")  # type: ignore[arg-type]
+
+    def add_entry(self, e: ProjectEntry) -> ProjectEntry:
+        if not e.body.strip():
+            raise StorageError("Write something in the entry.")
+        with self._tx() as c:
+            e.id = c.execute("insert into project_entry (project_id, day, body) values (?, ?, ?)",
+                             (e.project_id, _iso(e.day), e.body.strip())).lastrowid
+        return e
+
+    def update_entry(self, e: ProjectEntry) -> ProjectEntry:
+        if not e.body.strip():
+            raise StorageError("Write something in the entry.")
+        with self._tx() as c:
+            c.execute("update project_entry set day = ?, body = ? where id = ?", (_iso(e.day), e.body.strip(), e.id))
+        return e
+
+    def delete_entry(self, entry_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from project_entry where id = ?", (entry_id,))
+
+    def get_entry(self, entry_id: int) -> ProjectEntry | None:
+        r = self.conn.execute("select * from project_entry where id = ?", (entry_id,)).fetchone()
+        return self._entry(r) if r else None
+
+    def list_entries(self, project_id: int) -> list[ProjectEntry]:
+        """Newest day first."""
+        rows = self.conn.execute("select * from project_entry where project_id = ? order by day desc, uid desc",
+                                 (project_id,))
+        return [self._entry(r) for r in rows]
+
+    # shortcuts, references and tasks: each kept in an order you can drag
+
+    @staticmethod
+    def _next_position(c: sqlite3.Connection, table: str, project_id: int) -> int:
+        return c.execute(f"select coalesce(max(position), 0) + 1 from {table} where project_id = ?",
+                         (project_id,)).fetchone()[0]
+
+    def move_items(self, kind: str, ids: list[int]) -> None:
+        """Put a project's shortcuts, references or tasks in this order."""
+        table = ORDERED.get(kind)
+        if table is None:
+            raise StorageError("That list can't be reordered.")
+        with self._tx() as c:
+            for place, item_id in enumerate(ids, start=1):
+                c.execute(f"update {table} set position = ? where id = ? and position != ?", (place, item_id, place))
+
+    @staticmethod
+    def _link(r: sqlite3.Row) -> ProjectLink:
+        return ProjectLink(id=r["id"], project_id=r["project_id"], name=r["name"], url=r["url"],
+                           category=r["category"] or "")
+
+    def add_link(self, link: ProjectLink) -> ProjectLink:
+        self._check_link(link)
+        with self._tx() as c:
+            link.id = c.execute("insert into project_link (project_id, name, url, category, position) values (?, ?, ?, ?, ?)",
+                                (link.project_id, link.name.strip(), link.url.strip(), link.category,
+                                 self._next_position(c, "project_link", link.project_id))).lastrowid
+        return link
+
+    def update_link(self, link: ProjectLink) -> ProjectLink:
+        self._check_link(link)
+        with self._tx() as c:
+            c.execute("update project_link set name = ?, url = ?, category = ? where id = ?",
+                      (link.name.strip(), link.url.strip(), link.category, link.id))
+        return link
+
+    @staticmethod
+    def _check_link(link: ProjectLink) -> None:
+        if not link.name.strip():
+            raise StorageError("Give the shortcut a name.")
+        if not link.url.strip():
+            raise StorageError("Paste the address the shortcut opens.")
+        if link.category and link.category not in LINK_CATEGORIES:
+            raise StorageError("Pick a kind of shortcut from the list.")
+
+    def delete_link(self, link_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from project_link where id = ?", (link_id,))
+
+    def get_link(self, link_id: int) -> ProjectLink | None:
+        r = self.conn.execute("select * from project_link where id = ?", (link_id,)).fetchone()
+        return self._link(r) if r else None
+
+    def list_links(self, project_id: int) -> list[ProjectLink]:
+        rows = self.conn.execute("select * from project_link where project_id = ? order by position, uid", (project_id,))
+        return [self._link(r) for r in rows]
+
+    @staticmethod
+    def _psource(r: sqlite3.Row) -> ProjectSource:
+        return ProjectSource(id=r["id"], project_id=r["project_id"], title=r["title"], authors=r["authors"] or "",
+                             year=r["year"] or "", link=r["link"] or "", status=r["status"] or "to_read",
+                             annotation=r["annotation"] or "")
+
+    @staticmethod
+    def _check_psource(s: ProjectSource) -> None:
+        if not s.title.strip():
+            raise StorageError("Give the reference a title.")
+        if s.status not in READING_STATUSES:
+            raise StorageError("Pick to read, reading or read.")
+
+    def add_project_source(self, s: ProjectSource) -> ProjectSource:
+        self._check_psource(s)
+        with self._tx() as c:
+            s.id = c.execute("insert into project_source (project_id, title, authors, year, link, status, annotation,"
+                             " position) values (?, ?, ?, ?, ?, ?, ?, ?)",
+                             (s.project_id, s.title.strip(), s.authors.strip(), s.year.strip(), s.link.strip(), s.status,
+                              s.annotation.strip(), self._next_position(c, "project_source", s.project_id))).lastrowid
+        return s
+
+    def update_project_source(self, s: ProjectSource) -> ProjectSource:
+        self._check_psource(s)
+        with self._tx() as c:
+            c.execute("update project_source set title = ?, authors = ?, year = ?, link = ?, status = ?, annotation = ?"
+                      " where id = ?", (s.title.strip(), s.authors.strip(), s.year.strip(), s.link.strip(), s.status,
+                                        s.annotation.strip(), s.id))
+        return s
+
+    def delete_project_source(self, source_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from project_source where id = ?", (source_id,))
+
+    def get_project_source(self, source_id: int) -> ProjectSource | None:
+        r = self.conn.execute("select * from project_source where id = ?", (source_id,)).fetchone()
+        return self._psource(r) if r else None
+
+    def list_project_sources(self, project_id: int) -> list[ProjectSource]:
+        rows = self.conn.execute("select * from project_source where project_id = ? order by position, uid", (project_id,))
+        return [self._psource(r) for r in rows]
+
+    @staticmethod
+    def _task(r: sqlite3.Row) -> ProjectTask:
+        return ProjectTask(id=r["id"], project_id=r["project_id"], text=r["text"], done=bool(r["done"]),
+                           done_at=_dt(r["done_at"]))
+
+    def add_task(self, t: ProjectTask) -> ProjectTask:
+        if not t.text.strip():
+            raise StorageError("Write what needs doing.")
+        with self._tx() as c:
+            t.id = c.execute("insert into project_task (project_id, text, done, position) values (?, ?, 0, ?)",
+                             (t.project_id, t.text.strip(), self._next_position(c, "project_task", t.project_id))).lastrowid
+        return t
+
+    def update_task(self, t: ProjectTask) -> ProjectTask:
+        if not t.text.strip():
+            raise StorageError("Write what needs doing.")
+        with self._tx() as c:
+            c.execute("update project_task set text = ? where id = ?", (t.text.strip(), t.id))
+        return t
+
+    def toggle_task(self, task_id: int, now: datetime | None = None) -> ProjectTask:
+        t = self.get_task(task_id)
+        if t is None:
+            raise StorageError("That task no longer exists.")
+        t.done = not t.done
+        t.done_at = (now or datetime.now()).replace(second=0, microsecond=0) if t.done else None
+        with self._tx() as c:
+            c.execute("update project_task set done = ?, done_at = ? where id = ?", (int(t.done), _iso(t.done_at), t.id))
+        return t
+
+    def delete_task(self, task_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from project_task where id = ?", (task_id,))
+
+    def get_task(self, task_id: int) -> ProjectTask | None:
+        r = self.conn.execute("select * from project_task where id = ?", (task_id,)).fetchone()
+        return self._task(r) if r else None
+
+    def list_tasks(self, project_id: int) -> list[ProjectTask]:
+        rows = self.conn.execute("select * from project_task where project_id = ? order by position, uid", (project_id,))
+        return [self._task(r) for r in rows]
+
+    # study time
+
+    @staticmethod
+    def _project_session(r: sqlite3.Row) -> Session:
+        return Session(id=r["id"], course_id=None, project_id=r["project_id"], started_at=_dt(r["started_at"]),  # type: ignore[arg-type]
+                       minutes=r["minutes"], note=r["note"] or "")
+
+    def get_project_session(self, session_id: int) -> Session | None:
+        r = self.conn.execute("select * from project_session where id = ?", (session_id,)).fetchone()
+        return self._project_session(r) if r else None
+
+    def delete_project_session(self, session_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from project_session where id = ?", (session_id,))
+
+    def list_project_sessions(self, project_id: int | None = None, since: datetime | None = None,
+                              until: datetime | None = None, limit: int | None = None) -> list[Session]:
+        """Newest first."""
+        sql, args = "select * from project_session where 1 = 1", []  # type: tuple[str, list[object]]
+        if project_id is not None:
+            sql += " and project_id = ?"
+            args.append(project_id)
+        if since is not None:
+            sql += " and started_at >= ?"
+            args.append(_iso(since))
+        if until is not None:
+            sql += " and started_at < ?"
+            args.append(_iso(until))
+        sql += " order by started_at desc, id desc"
+        if limit is not None:
+            sql += " limit ?"
+            args.append(limit)
+        return [self._project_session(r) for r in self.conn.execute(sql, args)]
+
+    def project_minutes(self, project_id: int | None = None) -> int:
+        if project_id is None:
+            row = self.conn.execute("select coalesce(sum(minutes), 0) from project_session").fetchone()
+        else:
+            row = self.conn.execute("select coalesce(sum(minutes), 0) from project_session where project_id = ?",
+                                    (project_id,)).fetchone()
+        return int(row[0])
 
     # ---------- settings ----------
 

@@ -3,46 +3,6 @@
 // The exams page: past exams (with their files and how each question went) and practice exams that
 // Gemini writes from them. Loaded after app.js; uses its helpers, and adds to its `actions`.
 
-// ---------- Markdown with maths ----------
-
-const mdCache = new Map();
-
-// Questions and answers come as Markdown with $...$ maths. HTML in them is shown as text, never run.
-function md(text) {
-  const src = String(text ?? "");
-  if (mdCache.has(src)) return mdCache.get(src);
-  const maths = [];
-  const keep = (tex, display) => { maths.push({ tex, display }); return `\u0000${maths.length - 1}\u0000`; };
-  let t = src
-    .replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => keep(m, true))
-    .replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => keep(m, true))
-    .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => keep(m, false))
-    .replace(/(^|[^\\$])\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g, (_, pre, m) => pre + keep(m, false));
-  t = t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  let html;
-  try {
-    html = window.marked ? marked.parse(t, { gfm: true, breaks: true }) : `<p>${t.replace(/\n/g, "<br>")}</p>`;
-  } catch (e) {
-    html = `<p>${t.replace(/\n/g, "<br>")}</p>`;
-  }
-  // Links only to the web; nothing else that could do something.
-  html = html.replace(/<a href="(?!https?:)[^"]*"/g, "<a").replace(/<a href=/g, '<a target="_blank" rel="noopener" href=');
-  html = html.replace(/\u0000(\d+)\u0000/g, (_, i) => {
-    const m = maths[Number(i)];
-    if (!window.katex) return esc(m.display ? `$$${m.tex}$$` : `$${m.tex}$`);
-    try {
-      // The text was escaped for HTML before marked saw it; KaTeX needs it as typed.
-      const tex = m.tex.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-      return katex.renderToString(tex, { displayMode: m.display, throwOnError: false, output: "html" });
-    } catch (e) {
-      return esc(m.tex);
-    }
-  });
-  if (mdCache.size > 800) mdCache.clear();
-  mdCache.set(src, html);
-  return html;
-}
-
 // ---------- drawing ----------
 
 const ROLE_LABELS = { exam: "Exam", solution: "Solutions", attempt: "My answers" };

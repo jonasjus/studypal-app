@@ -59,10 +59,12 @@ def _smoke_test(window) -> None:
         time.sleep(0.5)
         try:
             found = window.evaluate_js(
-                "document.querySelectorAll('.card').length + ' subjects, ' + "
+                "document.querySelectorAll('.card:not(.research)').length + ' subjects, ' + "
+                "document.querySelectorAll('.card.research').length + ' research, ' + "
                 "document.querySelectorAll('.list .row').length + ' list rows, accounts ' + "
                 "(state.account && state.account.configured ? 'on' : 'off') + ', maths ' + "
-                "(window.katex && window.marked && typeof renderExams === 'function' ? 'on' : 'off')")
+                "(window.katex && window.marked && typeof renderExams === 'function' ? 'on' : 'off') + ', research ' + "
+                "(typeof renderResearch === 'function' ? 'on' : 'off')")
         except Exception as e:  # the page isn't ready yet
             found = repr(e)
         if found and "subjects" in str(found) and (not str(found).startswith("0 subjects") or ".welcome" in str(

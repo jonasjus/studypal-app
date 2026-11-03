@@ -62,6 +62,7 @@ class Course:
     color: str = COURSE_COLORS[0]
     notes: str = ""
     done: bool = False  # finished with: moved out of the way, its deadlines and weak spots go quiet
+    position: int = 0  # place in the overview's list, shared with research projects; 0 = not placed yet
     id: int | None = None
 
 
@@ -101,12 +102,15 @@ class Deadline:
 
 @dataclass
 class Session:
-    course_id: int
+    """Study time for a course, or (with project_id and no course) for a research project."""
+
+    course_id: int | None
     started_at: datetime
     minutes: int
     topic_id: int | None = None
     note: str = ""
     id: int | None = None
+    project_id: int | None = None
 
 
 @dataclass
@@ -121,9 +125,10 @@ class SentNotification:
 class ActiveTimer:
     """A study session that has started but not been logged yet. Survives quitting the TUI."""
 
-    course_id: int
+    course_id: int | None
     started_at: datetime
     topic_id: int | None = None
+    project_id: int | None = None  # set instead of course_id when timing a research project
 
 
 @dataclass
@@ -212,4 +217,83 @@ class ExamQuestion:
     result: str = ""
     note: str = ""  # what went wrong, in your own words
     why: str = ""  # practice exams: what the question was made to practise
+    id: int | None = None
+
+
+PROJECT_STATUSES = ("idea", "active", "paused", "done")
+READING_STATUSES = ("to_read", "reading", "read")
+LINK_CATEGORIES = ("writing", "references", "search", "code", "notebook", "data", "docs", "other")
+
+
+@dataclass
+class Project:
+    """A research project: lives in the overview's list next to the courses."""
+
+    title: str
+    description: str = ""  # Markdown
+    status: str = "active"
+    tags: list[str] = field(default_factory=list)
+    start_on: date | None = None
+    end_on: date | None = None  # when it should be done, if there's a target
+    color: str = COURSE_COLORS[0]
+    position: int = 0
+    created_at: datetime = field(default_factory=lambda: datetime.now().replace(second=0, microsecond=0))
+    id: int | None = None
+
+    @property
+    def done(self) -> bool:
+        return self.status == "done"
+
+
+@dataclass
+class ProjectNote:
+    project_id: int
+    title: str = ""
+    body: str = ""  # Markdown, with $...$ for maths
+    created_at: datetime = field(default_factory=lambda: datetime.now().replace(second=0, microsecond=0))
+    updated_at: datetime | None = None  # when it was last saved (from the sync column)
+    id: int | None = None
+
+
+@dataclass
+class ProjectEntry:
+    """A dated journal entry: what was tried, what came out of it."""
+
+    project_id: int
+    day: date
+    body: str = ""  # Markdown
+    id: int | None = None
+
+
+@dataclass
+class ProjectLink:
+    """A shortcut to a tool or resource: Overleaf, Zotero, a repo, a notebook, a dataset."""
+
+    project_id: int
+    name: str
+    url: str
+    category: str = ""  # one of LINK_CATEGORIES, or "" to guess from the address
+    id: int | None = None
+
+
+@dataclass
+class ProjectSource:
+    """A paper or other reference for a project."""
+
+    project_id: int
+    title: str
+    authors: str = ""  # separated by semicolons, like Source.author
+    year: str = ""
+    link: str = ""  # DOI or URL
+    status: str = "to_read"
+    annotation: str = ""
+    id: int | None = None
+
+
+@dataclass
+class ProjectTask:
+    project_id: int
+    text: str
+    done: bool = False
+    done_at: datetime | None = None
     id: int | None = None

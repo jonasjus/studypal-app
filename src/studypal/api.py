@@ -15,6 +15,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import webbrowser
@@ -41,7 +43,7 @@ from .core.logic.dates import DateParseError
 from .core.logic.notify import banner_groups
 from .core.logic.pomodoro import PomodoroRun, PomodoroSettings, phase_length, remaining
 from .core.logic.reading import ReadingParseError, ReadingProgress, parse_section_ranges, parse_toc
-from .core.logic.stats import days_since, format_minutes, is_stale, week_range
+from .core.logic.stats import days_since, format_minutes, is_stale, minutes_per_day, week_range
 from .core.logic.timeline import CramProgress, Phase, cram_progress
 from .core.models import (
     COURSE_COLORS,
@@ -52,8 +54,17 @@ from .core.models import (
     ExamFile,
     ExamQuestion,
     FILE_ROLES,
+    LINK_CATEGORIES,
+    PROJECT_STATUSES,
+    READING_STATUSES,
     RESULTS,
     Priority,
+    Project,
+    ProjectEntry,
+    ProjectLink,
+    ProjectNote,
+    ProjectSource,
+    ProjectTask,
     Section,
     Session,
     Source,
@@ -299,6 +310,93 @@ def _session(s: Session, codes: dict[int, str], topics: dict[int, str]) -> dict:
             "topic_id": s.topic_id, "topic": topics.get(s.topic_id) if s.topic_id else None,
             "started_at": _iso(s.started_at), "started_label": _when(s.started_at),
             "minutes": s.minutes, "length": format_minutes(s.minutes), "note": s.note}
+
+
+def _optional_date(data: dict, key: str) -> date | None:
+    value = _text(data, key)
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise UserError(f"{value!r} isn't a date.") from None
+
+
+STATUS_LABELS = {"idea": "Idea", "active": "Active", "paused": "Paused", "done": "Done"}
+READING_LABELS = {"to_read": "To read", "reading": "Reading", "read": "Read"}
+# Addresses a shortcut may open: web pages, and apps that register their own kind of link.
+LINK_SCHEMES = ("http", "https", "zotero", "obsidian")
+# (piece of the address, kind of shortcut), for guessing a shortcut's icon. First match wins.
+LINK_GUESSES = (
+    ("overleaf.", "writing"), ("sharelatex.", "writing"),
+    ("zotero", "references"), ("mendeley.", "references"),
+    ("scholar.google.", "search"), ("arxiv.org", "search"), ("semanticscholar.", "search"), ("pubmed", "search"),
+    ("researchgate.", "search"), ("dblp.", "search"), ("connectedpapers.", "search"),
+    ("colab.research.google.", "notebook"), ("jupyter", "notebook"), ("kaggle.com/code", "notebook"),
+    ("github.", "code"), ("gitlab.", "code"), ("bitbucket.", "code"),
+    ("huggingface.co/datasets", "data"), ("kaggle.", "data"), ("zenodo.", "data"), ("figshare.", "data"),
+    ("data.", "data"), ("huggingface.", "code"),
+    ("docs.google.", "docs"), ("drive.google.", "docs"), ("notion.", "docs"), ("dropbox.", "docs"),
+    ("onedrive.", "docs"), ("sharepoint.", "docs"),
+)
+
+
+def link_address(text: str) -> str:
+    """What a shortcut or reference opens: a DOI becomes its doi.org page, a bare "github.com/me" gets https://.
+    Raises UserError for anything else, so a shortcut can never run a program or open a local file."""
+    t = text.strip()
+    if not t:
+        raise UserError("Paste the address to open.")
+    doi = re.match(r"^(?:doi:\s*)?(10\.\d{4,9}/\S+)$", t, re.IGNORECASE)
+    if doi:
+        return f"https://doi.org/{doi.group(1)}"
+    scheme = re.match(r"^([a-z][a-z0-9+.-]*):", t, re.IGNORECASE)
+    if scheme and not re.match(r"^[^/]+:\d+", t):  # "localhost:8888" is a host and port, not a scheme
+        if scheme.group(1).lower() not in LINK_SCHEMES:
+            raise UserError("Shortcuts open web addresses (https://…) or Zotero and Obsidian links.")
+        return t
+    if t.startswith(("localhost", "127.0.0.1")):  # a notebook server on this computer
+        return f"http://{t}"
+    if " " in t or "." not in t.split("/")[0]:
+        raise UserError(f"“{t}” doesn't look like a web address.")
+    return f"https://{t}"
+
+
+def guess_category(url: str) -> str:
+    low = url.lower()
+    if low.startswith("zotero:"):
+        return "references"
+    if low.startswith("obsidian:"):
+        return "docs"
+    return next((kind for piece, kind in LINK_GUESSES if piece in low), "other")
+
+
+def _host(url: str) -> str:
+    """Where a shortcut goes, in short: "github.com", or the app for a zotero:// or obsidian:// link."""
+    if not url.lower().startswith(("http:", "https:")):
+        return f"{url.split(':', 1)[0].capitalize()} app"
+    m = re.match(r"^[a-z]+://([^/?#]+)", url, re.IGNORECASE)
+    return m.group(1).removeprefix("www.") if m else url.split(":", 1)[0]
+
+
+def _project(p: Project) -> dict:
+    today = date.today()
+    if p.end_on:
+        days = (p.end_on - today).days
+        due = f"due {describe_days(days)}" if days >= 0 else f"was due {describe_days(days)}"
+    else:
+        due = ""
+    return {"id": p.id, "title": p.title, "description": p.description, "status": p.status,
+            "status_label": STATUS_LABELS.get(p.status, p.status), "tags": p.tags, "tags_text": ", ".join(p.tags),
+            "start_on": _iso(p.start_on), "end_on": _iso(p.end_on), "color": p.color, "done": p.done,
+            "start_label": _day(p.start_on) if p.start_on else "", "end_label": _day(p.end_on) if p.end_on else "",
+            "due_words": due}
+
+
+def _project_session(s: Session) -> dict:
+    return {"id": s.id, "project_id": s.project_id, "started_at": _iso(s.started_at),
+            "started_label": _when(s.started_at), "minutes": s.minutes, "length": format_minutes(s.minutes),
+            "note": s.note}
 
 
 class Api:
@@ -646,6 +744,7 @@ class Api:
         timer = self._store.get_timer()
         if timer is not None:
             return {"kind": "timer", "course_id": timer.course_id, "course_code": codes.get(timer.course_id),
+                    **self._running_label(timer.course_id, timer.project_id, codes),
                     "topic": topics.get(timer.topic_id) if timer.topic_id else None,
                     "started_at": timer.started_at.isoformat(timespec="seconds"),
                     "elapsed_seconds": int((now - timer.started_at).total_seconds())}
@@ -654,11 +753,19 @@ class Api:
             return self._pomodoro_json(run, now, codes, topics)
         return None
 
+    def _running_label(self, course_id: int | None, project_id: int | None, codes: dict[int, str]) -> dict:
+        """What's being worked on, for the bar at the top: a course's code or a project's title."""
+        if project_id is not None:
+            p = self._store.get_project(project_id)
+            return {"project_id": project_id, "label": p.title if p else "Research"}
+        return {"project_id": None, "label": codes.get(course_id) if course_id is not None else ""}
+
     def _pomodoro_json(self, run: PomodoroRun, now: datetime, codes: dict[int, str], topics: dict[int, str]) -> dict:
         settings = self._pomodoro_settings()
         left = remaining(run, now, settings)
         length = phase_length(run.phase, settings)
         return {"kind": "pomodoro", "course_id": run.course_id, "course_code": codes.get(run.course_id),
+                **self._running_label(run.course_id, run.project_id, codes),
                 "topic": topics.get(run.topic_id) if run.topic_id else None,
                 "phase": run.phase.value, "phase_label": run.phase.label, "paused": run.paused,
                 "completed": run.completed,
@@ -672,6 +779,11 @@ class Api:
         dash = build(self._store, self._config(), now)
         codes, topics = self._codes(), self._topic_titles()
         overdue, soon = banner_groups(dash.deadlines, now)
+        projects = self._store.list_projects()
+        first_day = dash.week_days[0]
+        research_week = minutes_per_day(self._store.list_project_sessions(
+            since=datetime.combine(first_day, datetime.min.time()),
+            until=datetime.combine(first_day + timedelta(days=7), datetime.min.time())), first_day)
         return {
             "today": f"{now:%A} {now.day} {now:%B}",
             "greeting": {"hello": _hello(now), "text": self._greeting},
@@ -680,15 +792,47 @@ class Api:
             "done_courses": [_summary(s) for s in dash.done_courses],
             "deadlines": [_deadline(d, now, codes) for d in dash.deadlines],
             "weak_spots": [_weak(w, now, codes, topics) for w in dash.weak_spots],
-            "week": [{"label": f"{d:%a}", "minutes": m, "length": format_minutes(m) if m else "",
-                      "today": d == now.date()} for d, m in zip(dash.week_days, dash.week_minutes)],
-            "week_total": format_minutes(sum(dash.week_minutes)),
+            "list": self._overview_list(dash.courses, projects, False, now),
+            "done_list": self._overview_list(dash.done_courses, projects, True, now),
+            "week": [{"label": f"{d:%a}", "minutes": m + r, "course_minutes": m, "research_minutes": r,
+                      "length": format_minutes(m + r) if m + r else "", "today": d == now.date()}
+                     for d, m, r in zip(dash.week_days, dash.week_minutes, research_week)],
+            "week_total": format_minutes(sum(dash.week_minutes) + sum(research_week)),
+            "week_has_research": any(research_week),
             "banner": {"overdue": [_deadline(d, now, codes) for d in overdue],
                        "soon": [_deadline(d, now, codes) for d in soon]},
             "running": self._running(now),
             "colors": list(COURSE_COLORS),
             "next_color": self._store.next_color(),
         }
+
+    def _overview_list(self, courses: list[CourseSummary], projects: list[Project], done: bool, now: datetime) -> list[dict]:
+        """Courses and research projects in one list, in the order you've dragged them into. Until you have,
+        courses come first (soonest exam first), then projects in the order they were added."""
+        week_start, week_end = week_range(now.date(), self._config().week_start)
+        items: list[tuple[tuple[int, int, int], dict]] = []
+        for i, s in enumerate(courses):
+            items.append(((s.course.position, 0, i), {"kind": "course", **_summary(s)}))
+        mine = [p for p in projects if p.done == done]
+        for i, p in enumerate(mine):
+            items.append(((p.position, 1, i), {"kind": "project", **self._project_card(p, week_start, week_end)}))
+        return [item for _, item in sorted(items, key=lambda kv: kv[0])]
+
+    def _project_card(self, p: Project, week_start: datetime, week_end: datetime) -> dict:
+        tasks = self._store.list_tasks(p.id)  # type: ignore[arg-type]
+        sources = self._store.list_project_sources(p.id)  # type: ignore[arg-type]
+        week = sum(s.minutes for s in self._store.list_project_sessions(p.id, since=week_start, until=week_end))
+        notes = len(self._store.list_notes(p.id))  # type: ignore[arg-type]
+        facts = []
+        if notes:
+            facts.append(f"{notes} note{'s' if notes != 1 else ''}")
+        if sources:
+            facts.append(f"{sum(1 for x in sources if x.status == 'read')}/{len(sources)} read")
+        facts.append(f"{format_minutes(week)} this week")
+        open_tasks = [t for t in tasks if not t.done]
+        return {**_project(p), "tasks_done": len(tasks) - len(open_tasks), "tasks_total": len(tasks),
+                "next_task": open_tasks[0].text if open_tasks else "", "facts": " · ".join(facts),
+                "week_minutes": week}
 
     @action
     def subject(self, course_id: int) -> dict:
@@ -901,6 +1045,17 @@ class Api:
         if minutes <= 0:
             raise UserError("How long did you study? Enter some hours or minutes.")
         started = _datetime(data, "started_at", "when you studied")
+        project_id = _int(data, "project_id")
+        if project_id is not None:  # time on a research project
+            if session_id:
+                old = self._store.get_project_session(session_id)
+                if old is None:
+                    raise UserError("That study session no longer exists.")
+                self._store.update_session(replace(old, started_at=started, minutes=minutes, note=_text(data, "note")))
+            else:
+                self._store.log_session(Session(course_id=None, project_id=project_id, started_at=started,
+                                                minutes=minutes, note=_text(data, "note")))
+            return
         if session_id:
             old = self._store.get_session(session_id)
             if old is None:
@@ -919,8 +1074,8 @@ class Api:
         self._store.delete_session(session_id)
 
     @action
-    def timer_start(self, course_id: int, topic_id: int | None = None) -> None:
-        self._store.start_timer(course_id, topic_id)
+    def timer_start(self, course_id: int | None, topic_id: int | None = None, project_id: int | None = None) -> None:
+        self._store.start_timer(course_id, topic_id, project_id=project_id)
 
     @action
     def timer_stop(self) -> dict:
@@ -934,8 +1089,8 @@ class Api:
         self._store.cancel_timer()
 
     @action
-    def pomo_start(self, course_id: int, topic_id: int | None = None) -> None:
-        self._store.start_pomodoro(course_id, topic_id)
+    def pomo_start(self, course_id: int | None, topic_id: int | None = None, project_id: int | None = None) -> None:
+        self._store.start_pomodoro(course_id, topic_id, project_id=project_id)
         self._last_pomo_phase = ("focus", 0)
 
     @action
@@ -1446,6 +1601,224 @@ class Api:
         return {"ok": True, "message": f"Saved {path.name}. It opens in your browser, ready to print."}
 
     # ---------- backup ----------
+
+    # ---------- research projects ----------
+
+    @action
+    def projects(self) -> list[dict]:
+        """Every research project, for the pickers in forms."""
+        return [_project(p) for p in self._store.list_projects()]
+
+    @action
+    def research(self, project_id: int) -> dict:
+        now = datetime.now().replace(microsecond=0)
+        p = self._store.get_project(project_id)
+        if p is None:
+            raise UserError("That project no longer exists.")
+        week_start, week_end = week_range(now.date(), self._config().week_start)
+        tasks = self._store.list_tasks(project_id)
+        sources = self._store.list_project_sources(project_id)
+        return {
+            "project": _project(p),
+            "notes": [self._note_json(n) for n in self._store.list_notes(project_id)],
+            "entries": [{"id": e.id, "day": _iso(e.day), "day_label": f"{_day(e.day)} {e.day.year}", "body": e.body}
+                        for e in self._store.list_entries(project_id)],
+            "links": [{"id": x.id, "name": x.name, "url": x.url, "category": x.category,
+                       "kind": x.category or guess_category(x.url), "host": _host(x.url)}
+                      for x in self._store.list_links(project_id)],
+            "sources": [{"id": x.id, "title": x.title, "authors": x.authors, "year": x.year, "link": x.link,
+                         "status": x.status, "status_label": READING_LABELS[x.status], "annotation": x.annotation,
+                         "apa": apa(Source(course_id=0, title=x.title, author=x.authors, kind="article", year=x.year,
+                                           link=x.link)).text}
+                        for x in sources],
+            "reading": {s: sum(1 for x in sources if x.status == s) for s in READING_STATUSES},
+            "tasks": [{"id": t.id, "text": t.text, "done": t.done,
+                       "done_label": _day(t.done_at.date()) if t.done_at else ""} for t in tasks],
+            "tasks_done": sum(1 for t in tasks if t.done),
+            "sessions": [_project_session(x) for x in self._store.list_project_sessions(project_id, limit=50)],
+            "week_total": format_minutes(sum(x.minutes for x in self._store.list_project_sessions(
+                project_id, since=week_start, until=week_end))),
+            "total": format_minutes(self._store.project_minutes(project_id)),
+            "statuses": [[s, STATUS_LABELS[s]] for s in PROJECT_STATUSES],
+            "categories": list(LINK_CATEGORIES),
+            "running": self._running(now),
+        }
+
+    @action
+    def save_project(self, data: dict) -> dict:
+        project_id = _int(data, "id")
+        old = self._store.get_project(project_id) if project_id else None
+        status = _text(data, "status") or "active"
+        if status not in PROJECT_STATUSES:
+            raise UserError("Pick a status for the project.")
+        tags = [t.strip() for t in str(data.get("tags") or "").split(",")]
+        fields = {"title": _text(data, "title"), "description": str(data.get("description") or "").strip(),
+                  "status": status, "tags": [t for i, t in enumerate(tags) if t and t.lower() not in
+                                             (x.lower() for x in tags[:i])],
+                  "start_on": _optional_date(data, "start_on"), "end_on": _optional_date(data, "end_on"),
+                  "color": _text(data, "color") or (old.color if old else self._store.next_color())}
+        if old is not None:
+            self._store.update_project(replace(old, **fields))
+            return {"ok": True, "id": project_id}
+        return {"ok": True, "id": self._store.add_project(Project(**fields)).id}
+
+    @action
+    def set_project_status(self, project_id: int, status: str) -> None:
+        if status not in PROJECT_STATUSES:
+            raise UserError("Pick a status for the project.")
+        self._store.set_project_status(project_id, status)
+
+    @action
+    def delete_project(self, project_id: int) -> None:
+        self._store.delete_project(project_id)
+
+    @action
+    def reorder(self, items: list[dict]) -> None:
+        """The overview's list after dragging: [{kind: "course"|"project", id}, ...] from top to bottom."""
+        self._store.reorder([(str(x.get("kind")), int(x.get("id"))) for x in items])
+
+    @action
+    def move_items(self, kind: str, ids: list[int]) -> None:
+        self._store.move_items(kind, [int(i) for i in ids])
+
+    # notes: saved while you type, so these answer with the note instead of making the page redraw
+
+    @staticmethod
+    def _note_json(n: ProjectNote) -> dict:
+        updated = n.updated_at or n.created_at
+        return {"id": n.id, "title": n.title, "body": n.body, "created_label": _when(n.created_at),
+                "updated_label": _when(updated), "updated": _iso(updated)}
+
+    @action
+    def add_note(self, project_id: int) -> dict:
+        if self._store.get_project(project_id) is None:
+            raise UserError("That project no longer exists.")
+        return self._note_json(self._store.add_note(ProjectNote(project_id=project_id)))
+
+    @action
+    def save_note(self, data: dict) -> dict:
+        note_id = _int(data, "id")
+        old = self._store.get_note(note_id) if note_id else None
+        if old is None:
+            raise UserError("That note was deleted (maybe on another computer). Copy your text before leaving.")
+        return self._note_json(self._store.update_note(replace(old, title=_text(data, "title"),
+                                                                body=str(data.get("body") or ""))))
+
+    @action
+    def delete_note(self, note_id: int) -> None:
+        self._store.delete_note(note_id)
+
+    # journal
+
+    @action
+    def save_entry(self, data: dict) -> dict:
+        entry_id = _int(data, "id")
+        day = _date(data, "day", "the entry")
+        body = str(data.get("body") or "")
+        if entry_id:
+            old = self._store.get_entry(entry_id)
+            if old is None:
+                raise UserError("That entry no longer exists.")
+            self._store.update_entry(replace(old, day=day, body=body))
+            return {"ok": True, "id": entry_id}
+        return {"ok": True, "id": self._store.add_entry(ProjectEntry(project_id=_int(data, "project_id"),  # type: ignore[arg-type]
+                                                                     day=day, body=body)).id}
+
+    @action
+    def delete_entry(self, entry_id: int) -> None:
+        self._store.delete_entry(entry_id)
+
+    # shortcuts
+
+    @action
+    def save_link(self, data: dict) -> dict:
+        link_id = _int(data, "id")
+        category = _text(data, "category")
+        fields = {"name": _text(data, "name"), "url": link_address(_text(data, "url")),
+                  "category": "" if category == "auto" else category}
+        if not fields["name"]:
+            fields["name"] = _host(fields["url"])
+        if link_id:
+            old = self._store.get_link(link_id)
+            if old is None:
+                raise UserError("That shortcut no longer exists.")
+            self._store.update_link(replace(old, **fields))
+            return {"ok": True, "id": link_id}
+        return {"ok": True, "id": self._store.add_link(ProjectLink(project_id=_int(data, "project_id"), **fields)).id}  # type: ignore[arg-type]
+
+    @action
+    def delete_link(self, link_id: int) -> None:
+        self._store.delete_link(link_id)
+
+    @action
+    def open_link(self, url: str) -> None:
+        """Open a shortcut, a reference or a link in a note in the computer's browser (or Zotero), never in
+        this window."""
+        url = link_address(str(url))
+        if url.lower().startswith(("http:", "https:")):
+            webbrowser.open(url)
+        elif sys.platform == "win32":
+            os.startfile(url)  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", url])
+
+    # references
+
+    @action
+    def save_project_source(self, data: dict) -> dict:
+        source_id = _int(data, "id")
+        status = _text(data, "status") or "to_read"
+        link = _text(data, "link")
+        fields = {"title": _text(data, "title"), "authors": _text(data, "authors"), "year": _text(data, "year"),
+                  "link": link_address(link) if link else "", "status": status,
+                  "annotation": str(data.get("annotation") or "").strip()}
+        if status not in READING_STATUSES:
+            raise UserError("Pick to read, reading or read.")
+        if source_id:
+            old = self._store.get_project_source(source_id)
+            if old is None:
+                raise UserError("That reference no longer exists.")
+            self._store.update_project_source(replace(old, **fields))
+            return {"ok": True, "id": source_id}
+        return {"ok": True, "id": self._store.add_project_source(
+            ProjectSource(project_id=_int(data, "project_id"), **fields)).id}  # type: ignore[arg-type]
+
+    @action
+    def set_source_status(self, source_id: int, status: str) -> None:
+        old = self._store.get_project_source(source_id)
+        if old is None:
+            raise UserError("That reference no longer exists.")
+        self._store.update_project_source(replace(old, status=status))
+
+    @action
+    def delete_project_source(self, source_id: int) -> None:
+        self._store.delete_project_source(source_id)
+
+    # tasks
+
+    @action
+    def save_task(self, data: dict) -> dict:
+        task_id = _int(data, "id")
+        if task_id:
+            old = self._store.get_task(task_id)
+            if old is None:
+                raise UserError("That task no longer exists.")
+            self._store.update_task(replace(old, text=_text(data, "text")))
+            return {"ok": True, "id": task_id}
+        return {"ok": True, "id": self._store.add_task(ProjectTask(project_id=_int(data, "project_id"),  # type: ignore[arg-type]
+                                                                   text=_text(data, "text"))).id}
+
+    @action
+    def toggle_task(self, task_id: int) -> None:
+        self._store.toggle_task(task_id)
+
+    @action
+    def delete_task(self, task_id: int) -> None:
+        self._store.delete_task(task_id)
+
+    @action
+    def delete_project_session(self, session_id: int) -> None:
+        self._store.delete_project_session(session_id)
 
     @action
     def export_markdown(self) -> dict:

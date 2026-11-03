@@ -16,6 +16,7 @@ and logic, so the two behave the same. They don't share a database.
 | Sync between computers | git (`study sync`) | Optional account, synced through Supabase |
 | CLI | yes | no |
 | Past exams, practice exams with Gemini | no | yes |
+| Research projects | no | yes |
 
 ## Accounts and the cloud
 
@@ -55,7 +56,7 @@ This is done: the app uses the `studypal` project (ref `jyicurszzboxaggvktqc`, S
 2. Link this folder and set it up:
    ```sh
    supabase link --project-ref <project-ref>
-   supabase db push        # the study_rows table, the exam-files bucket, their security rules, delete_my_account()
+   supabase db push        # the study_rows table (with every kind of row), the exam-files bucket, their security rules, delete_my_account()
    supabase config push    # auth: 8-character passwords, no email confirmation (see supabase/config.toml)
    ```
 3. Put the project URL and the publishable key (`supabase projects api-keys --project-ref <ref>`,
@@ -111,6 +112,34 @@ model is `gemini-3.8-flash`; Settings can switch to `gemini-4-argon` for hard ma
 retired, StudyPal falls back to `gemini-flash-latest`. Exam files are sent to Google whenever
 Gemini reads or writes an exam. Each request carries up to 45 MB of files (Gemini takes 50 MB), newest
 exams first.
+
+## Research
+
+Research projects (a thesis, a paper, a side project) sit in the overview's list with the subjects,
+drawn as dashed cards with a **Research** label and a bar of their tasks. Drag any card by the handle
+on its left edge to change the order (or focus the handle and press Alt+↑/↓). Until you do, subjects
+come first, soonest exam first, as before. A project's status is idea, active, paused or done; done
+projects move to **Finished** with finished subjects.
+
+A project's page has its dates, tags, a Markdown description and one-click shortcuts, then tabs:
+
+- **Notes**: as many as you like, in Markdown with maths. They save as you type (and before anything
+  redraws the page), show when they were created and last edited, and can be searched.
+- **Journal**: dated entries for experiments, results and decisions, newest first.
+- **Tasks**: next steps to tick off, in an order you drag.
+- **References**: title, authors, year, link or DOI, to read / reading / read, and an annotation.
+  Filter by status, drag to reorder, copy one or all as APA.
+- **Shortcuts**: links to Overleaf, Zotero, Scholar, arXiv, a repo, a notebook, a dataset. The
+  icon is guessed from the address (or picked). They open in the computer's browser, or in Zotero or
+  Obsidian for `zotero://` and `obsidian://` links. Nothing else opens, so a shortcut can't start a program.
+- **Time**: **Start working** runs the same timer or Pomodoro as for a subject. Project time is
+  kept apart from subject time, and the week chart stacks it on top in its own colour.
+
+Project time has its own table (`project_session`) rather than sessions without a subject, so an
+older version of the app syncing the same account never meets a session it can't store. Older versions
+skip research rows when they sync. One thing they can't keep is the order you've dragged the list into:
+when an older version next syncs, the order goes back to soonest exam first. So update every computer
+that shares an account.
 
 ## Themes
 
@@ -183,7 +212,7 @@ Edge WebView2, which comes with Windows 10 and 11.
 - `src/studypal/api.py`: everything the window can ask for. Each public method takes and returns
   plain JSON, and problems come back as `{"error": "..."}` for the window to show.
 - `src/studypal/web/`: the interface (plain HTML, CSS and JavaScript, no build step). `exams.js`
-  is the Exams page. `vendor/` holds [marked](https://marked.js.org/) 15.0.12 and
+  is the Exams page, `research.js` the research projects (their card, page and note saving). `vendor/` holds [marked](https://marked.js.org/) 15.0.12 and
   [KaTeX](https://katex.org/) 0.16.22 (woff2 fonts only), for questions written in Markdown with
   maths, so they work offline.
 - `src/studypal/app.py`: opens the window with [pywebview](https://pywebview.flowrl.com/), which
@@ -201,14 +230,14 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m studypal.devserver --demo   # the interface in a browser at http://localhost:8765
 ```
 
-In the browser version, `#subject/3` or `#reading/3` at the end of the address opens that page
+In the browser version, `#subject/3`, `#reading/3` or `#research/1` at the end of the address opens that page
 directly.
 
 To check a fresh build works end to end (page loads, reaches Python, draws the overview):
 
 ```sh
 STUDYPAL_NOTIFIER=print dist/StudyPal.app/Contents/MacOS/StudyPal --demo --smoke-test
-# smoke test: 4 subjects, 13 list rows, accounts off, maths on   (demo mode never has accounts)
+# smoke test: 4 subjects, 1 research, 13 list rows, accounts off, maths on, research on   (demo mode never has accounts)
 ```
 
 The app icon is `packaging/icon.svg`. `icon.png` and `StudyPal.icns` are made from it.
