@@ -1,0 +1,19 @@
+{
+  "questions": [
+    {"number": "1a", "parent_number": "1", "text": "Let $X_1, \\dots, X_n$ be independent and Poisson distributed with mean $\\lambda$. Show that $T = \\sum_i X_i$ is a sufficient statistic for $\\lambda$.",
+     "topic_tags": ["Sufficiency"], "question_type": "proof", "points": "5", "has_figure": false},
+    {"number": "1 b)", "parent_number": "1", "text": "Let $X_1, \\dots, X_n$ be independent and Poisson distributed with mean $\\lambda$. Find the maximum likelihood estimator of $\\lambda$.",
+     "topic_tags": ["Likelihood", "likelihood"], "question_type": "calculation", "points": "5 points", "has_figure": false},
+    {"number": "2", "parent_number": "", "text": "Explain the difference between a confidence interval and a credible interval.",
+     "topic_tags": ["Bayesian inference"], "question_type": "short answer", "points": "8", "has_figure": false},
+    {"number": "3", "parent_number": "", "text": "The figure shows the posterior density for three sample sizes. Describe how the posterior changes as $n$ grows, and why.",
+     "topic_tags": ["Bayesian inference"], "question_type": "essay", "points": "12", "has_figure": true},
+    {"number": "4", "parent_number": "", "text": "", "topic_tags": [], "question_type": "other", "points": "", "has_figure": false}
+  ],
+  "solutions": [
+    {"number": "1a", "answer": "By the factorisation theorem the joint pmf is $g(T, \\lambda) h(x)$, so $T$ is sufficient."},
+    {"number": "1b", "answer": "The log-likelihood is maximised at $\\bar X$, so $\\hat\\lambda = \\bar X$."},
+    {"number": "Question 2", "answer": "A confidence interval covers the true value in a given share of repeated samples; a credible interval holds the parameter with a given posterior probability."},
+    {"number": "7", "answer": "An answer to a question the exam doesn't have."}
+  ]
+}

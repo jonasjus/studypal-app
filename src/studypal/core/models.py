@@ -211,13 +211,17 @@ class ExamQuestion:
     exam_id: int
     number: str  # "1", "3b"
     prompt: str = ""  # Markdown, with $...$ for maths
-    answer: str = ""
-    marks: str = ""
-    topic_id: int | None = None
+    answer: str | None = ""  # None: the solutions don't answer it (read exams never guess one)
+    marks: str = ""  # the points it's worth, as printed
+    topic_id: int | None = None  # the course topic it counts toward (the first of topic_tags that is one)
     result: str = ""
     note: str = ""  # what went wrong, in your own words
     why: str = ""  # practice exams: what the question was made to practise
     id: int | None = None
+    parent_number: str = ""  # "3" for 3b
+    question_type: str = ""  # one of logic/questions.QUESTION_TYPES, "" if not known
+    topic_tags: list[str] = field(default_factory=list)
+    has_figure: bool = False
 
 
 PROJECT_STATUSES = ("idea", "active", "paused", "done")

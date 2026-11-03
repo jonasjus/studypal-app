@@ -15,7 +15,7 @@ and logic, so the two behave the same. They don't share a database.
 | Notifications | `study notify` on a schedule | While the app is open, also in the background, with a pling when a Pomodoro phase ends |
 | Sync between computers | git (`study sync`) | Optional account, synced through Supabase |
 | CLI | yes | no |
-| Past exams, practice exams with Groq | no | yes |
+| Past exams, practice exams with Gemini, Groq or Ollama | no | yes |
 | Research projects | no | yes |
 
 ## Accounts and the cloud
@@ -90,33 +90,53 @@ Each subject has an **Exams** page (button on the subject page).
 
 - **Past exams.** Add the exam paper (PDF or photos). If you have them, also add the solutions and
   your own answers, graded if possible. Click a file to open it in Preview.
-- **Read questions.** Groq lists the exam's questions, transcribed with their maths and linked to
-  the subject's topics. It adds the answers from the solutions, or writes a short one itself when
-  there are no solutions (the page says which). Given your own answers, it also marks how each
-  question went and notes what went wrong. Groq can't read PDFs, so StudyPal draws each page as an
-  image and sends three pages at a time (Groq's limit), in stages: the paper's questions, then the
-  solutions, then your answers, joined up by question number (a question running over a page break
-  is joined too).
+- **Read questions.** StudyPal turns the exam into structured questions (`core/ingest.py`):
+  1. *Parse.* Each file becomes Markdown, page by page. A page with a text layer is taken as it is
+     (pypdfium2), and the next step writes its garbled formulas back as LaTeX; a scanned page goes to
+     the model as an image to be transcribed, a few pages per request.
+  2. *Extract.* The exam's Markdown goes to the model a few pages at a time, which lists the questions
+     (number as printed, parent number, text, topic tags, type, points, whether it needs a figure); then
+     the solutions' Markdown, for their answers. Pydantic checks both (`core/logic/questions.py`); entries that don't fit
+     are left out and counted.
+  3. *Match.* Answers are matched to questions by number (`3 b)` is `3b`, `Oppgave 2` is `2`). A question
+     the solutions don't answer has no answer: the page says "No solution", and nothing is guessed.
+     Solutions whose number matches no question are named in the message.
+  4. *Mark.* Given your own answers, the model marks how each question went and notes what went wrong.
 - **Marking.** Each question can be marked **Got it**, **Partly** or **Missed**, with a note on what
-  went wrong. You can mark them yourself, also without Groq, and add questions by hand.
+  went wrong. You can mark them yourself, also without a model, and add questions by hand.
   **What to practise** totals these by topic. A question that went badly can become a weak spot.
-- **Practice exams.** Groq writes a new exam (short, half or full length) in the style of the past
-  exams, from the questions and solutions read from them (so read a past exam before it can be used). It aims at what went badly: the missed and partly right questions with their
-  notes, open weak spots, and topics with low confidence. You can also cover the course like the real
-  exam does, or pick topics. It's told about earlier practice questions so it doesn't repeat them.
-  Each question says what it practises. Solutions are folded away until you open them. You mark
+- **Practice exams.** `generate_exam(weak_topics, n)` (`core/generate.py`) writes n new questions in the
+  same schema, each with a worked solution. For every weak topic it shows the model 3 to 5 past questions
+  on it as examples (answered ones first, then ones that went badly), plus a few others for the style.
+  The weak topics are what went badly (missed and partly right questions, low-confidence topics), or
+  the whole course, or topics you pick. It's told about earlier practice questions so it doesn't repeat
+  them. Each question says what it practises. Solutions are folded away until you open them. You mark
   practice questions the same way, so they feed into the next practice exam. **Print…** saves the
   exam as a web page, with the solutions on a separate page, and opens it in the browser.
 
-Groq needs an API key: free from the [Groq console](https://console.groq.com/keys), pasted under
-Settings (the gear icon). Like the theme, it's kept in `prefs.json` on that computer only (readable
-only by the user) and isn't synced. `GROQ_API_KEY` in the environment works too. Exams are read by
-`qwen/qwen3.8-27b`, Groq's one model that takes images (a preview model, so Groq may replace it).
-Practice exams and answers are written by `openai/gpt-oss-120b` by default; Settings can switch to
-`gpt-oss-20b` or Qwen. Answers come back as strict structured JSON. On the free plan, hitting the
-per-minute limit makes StudyPal wait as long as Groq says and carry on; the daily limit says so.
-Exam pages are sent to Groq whenever it reads an exam; up to 40 pages per file. Photos are shrunk to
-JPEG first, and iPhone photos (HEIC) are converted on a Mac (elsewhere, save them as JPG).
+The model is chosen in Settings (the gear icon), and every provider is reached through the same
+OpenAI-compatible chat API (`core/llm.py`):
+
+| Provider | Models | Key |
+|---|---|---|
+| **Gemini** (default) | `gemini-3.8-flash` | `GEMINI_API_KEY`, or pasted in Settings; free from [Google AI Studio](https://aistudio.google.com/apikey) |
+| Groq | `openai/gpt-oss-120b`, and `qwen/qwen3.8-27b` (preview) for scanned pages | `GROQ_API_KEY`, or Settings; free from the [Groq console](https://console.groq.com/keys) |
+| Ollama | Any local model that reads images (`gemma3` by default) | None: it runs on this computer |
+
+Free plans let a model take and write little per minute (Groq's free plan: 8,000 tokens a minute for
+`gpt-oss-120b`, and 1,000 written tokens a minute for its image model). So the exam is read a few pages per
+request (questions first, then solutions); a request whose answer is cut off is split in half and asked
+again; a request over the per-minute limit asks for a shorter answer; practice-exam prompts carry fewer
+example questions (1 to 5 per topic, shortened if needed); and a long practice exam is written in two
+halves. Groq also stops answers at 1,024 tokens unless asked for more, so StudyPal asks for 8,192 and treats
+an answer that used them all as cut off. While it waits for a per-minute limit, the progress line says so.
+
+An environment variable wins over a key in Settings. Keys in Settings are kept in `prefs.json` on that
+computer only (readable only by the user) and aren't synced; none are in this repository. Answers come
+back as strict structured JSON. Rate limits (429) and busy servers are retried with exponential backoff
+(2, 4, 8, 16 s, or as long as the server asks, up to a minute); a daily limit says so instead. The exam's
+text and scanned pages are sent to the provider (not with Ollama); up to 40 pages per file. Photos are
+shrunk to JPEG first, and iPhone photos (HEIC) are converted on a Mac (elsewhere, save them as JPG).
 
 ## Research
 
@@ -210,10 +230,12 @@ Edge WebView2, which comes with Windows 10 and 11.
 - `src/studypal/core/cloud.py`: accounts (Supabase Auth) and syncing with the `study_rows` table and
   the exam-files bucket, using only the standard library for HTTP. `core/dataset.py` turns the
   database into rows and back.
-- `src/studypal/core/groq.py`: the Groq API (OpenAI-style chat completions with strict JSON output).
-  `core/pages.py` draws PDF pages and shrinks photos ([pypdfium2](https://github.com/pypdfium2-team/pypdfium2)
-  and Pillow). The prompts, the joining up of pages and the summary of what went badly are in
-  `core/logic/exams.py`, and the exam files folder is handled by `core/files.py`.
+- `src/studypal/core/llm.py`: the model provider interface and its OpenAI-compatible client (Gemini,
+  Groq, Ollama), with retries. `core/pages.py` takes PDF text and draws pages and photos as images
+  ([pypdfium2](https://github.com/pypdfium2-team/pypdfium2) and Pillow). `core/ingest.py` reads an exam
+  into questions; `core/logic/questions.py` has their Pydantic schema and the matching with solutions.
+  `core/generate.py` writes new questions; its few-shot choice, prompt and the summary of what went
+  badly are in `core/logic/exams.py`. The exam files folder is handled by `core/files.py`.
 - `supabase/`: the cloud table, its security rules and auth settings.
 - `src/studypal/api.py`: everything the window can ask for. Each public method takes and returns
   plain JSON, and problems come back as `{"error": "..."}` for the window to show.

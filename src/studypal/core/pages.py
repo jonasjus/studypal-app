@@ -1,25 +1,54 @@
-"""Turning exam files into what Groq can read: page images (JPEG) and plain text.
+"""Turning exam files into pages: the text of each PDF page where it has one, and an image of the page
+where it doesn't (a scan).
 
-Groq can't read PDFs, so each PDF page is drawn as an image (pypdfium2). Photos are turned into JPEGs
-and shrunk to a size that reads well without wasting the request (Pillow). HEIC photos from iPhones are
-converted with the Mac's own `sips`, since Pillow can't open them; elsewhere they need to be saved as
-JPG first. Text files are passed on as text.
+A PDF's text layer comes out through pypdfium2. A page with little or no text is drawn as an image
+instead, for the model to transcribe (core/ingest.py). Formulas in a text layer come out as loose
+characters; the model that finds the questions writes them back as LaTeX. Photos are turned into JPEGs and shrunk to a size that reads well without
+wasting the request (Pillow). HEIC photos from iPhones are converted with the Mac's own `sips`, since
+Pillow can't open them; elsewhere they need to be saved as JPG first. Text files are passed on as text.
 """
 
 from __future__ import annotations
 
 import io
+import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 LONG_SIDE = 1700  # pixels: small print stays legible, a page stays a few hundred KB
 MAX_PAGES = 40  # per file
 
 
+MIN_TEXT = 120  # characters: a page with less text than this is taken to be a scan
+
+
 class PageError(Exception):
     """A file that can't be turned into pages; the message says why."""
+
+
+@dataclass
+class Page:
+    """One page of a file: its text, or (when the text isn't enough) an image for the model to read."""
+
+    number: int
+    text: str = ""
+    image: bytes | None = None  # JPEG; set when the page needs reading by the model
+
+
+def needs_reading(text: str) -> bool:
+    """Whether the text layer is too thin to use: a scan (or a page that's only a picture)."""
+    return len("".join(text.split())) < MIN_TEXT
+
+
+def clean_text(text: str) -> str:
+    """A text layer tidied into plain Markdown-safe lines: no hyphenation at line ends, no runs of blanks."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _jpeg(image) -> bytes:  # a PIL image
@@ -77,10 +106,34 @@ def image_page(name: str, mime: str, data: bytes) -> bytes:
     return _jpeg(image)
 
 
-def split(name: str, mime: str, data: bytes) -> tuple[list[bytes], str]:
-    """(page images, text) for one file: a PDF or photo gives images, a text file gives text."""
+def pdf_text_pages(name: str, data: bytes) -> list[Page]:
+    """Each page's text, and an image of the pages whose text isn't enough."""
+    import pypdfium2 as pdfium
+
+    try:
+        pdf = pdfium.PdfDocument(data)
+    except Exception:
+        raise PageError(f"“{name}” can't be opened as a PDF. Is it damaged, or protected with a password?") from None
+    try:
+        if len(pdf) > MAX_PAGES:
+            raise PageError(f"“{name}” has {len(pdf)} pages; StudyPal reads at most {MAX_PAGES}. Split it into parts.")
+        out = []
+        for i, page in enumerate(pdf, start=1):
+            text = clean_text(page.get_textpage().get_text_bounded())
+            image = None
+            if needs_reading(text):
+                width, height = page.get_size()
+                image = _jpeg(page.render(scale=LONG_SIDE / max(width, height)).to_pil())
+            out.append(Page(i, text, image))
+        return out
+    finally:
+        pdf.close()
+
+
+def to_pages(name: str, mime: str, data: bytes) -> list[Page]:
+    """A file as pages: a PDF page by page, a photo as one page to read, a text file as one page of text."""
     if mime == "application/pdf":
-        return pdf_pages(name, data), ""
+        return pdf_text_pages(name, data)
     if mime.startswith("image/"):
-        return [image_page(name, mime, data)], ""
-    return [], data.decode("utf-8", errors="replace")
+        return [Page(1, "", image_page(name, mime, data))]
+    return [Page(1, data.decode("utf-8", errors="replace")[:200_000])]

@@ -1,0 +1,11 @@
+STK310 Statistical Inference - Final exam, spring 2024
+Time: 4 hours. Allowed aids: one A4 sheet of notes, a simple calculator.
+Question 1 (10 points)
+Let X1, ..., Xn be independent and Poisson distributed with mean lambda.
+a) Show that T = X1 + ... + Xn is a sufficient statistic for lambda.
+b) Find the maximum likelihood estimator of lambda.
+Question 2 (8 points)
+Explain the difference between a confidence interval and a credible interval.
+Question 3 (12 points)
+The figure below shows the posterior density for three sample sizes.
+Describe how the posterior changes as n grows, and why.

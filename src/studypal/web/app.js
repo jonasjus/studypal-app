@@ -1290,11 +1290,12 @@ async function settingsForm() {
     intro: `<span class="faint" style="font-size:12px">Your data is stored in ${esc(where)}</span>`,
     onSubmit: async (v) => {
       await setTheme(v.theme, true);
-      const { theme, ai_key, ai_model, ai_forget, ...rest } = v;
-      await call("save_ai", { key: ai_key, model: ai_model, forget: !!ai_forget });
+      const rest = Object.fromEntries(Object.entries(v).filter(([k]) => k !== "theme" && !/^(ai_|key_|forget_|ollama_)/.test(k)));
+      await call("save_ai", aiValues(v, g));
       return call("save_settings", { ...rest, notifications: rest.notifications ? 1 : 0, sound: rest.sound ? 1 : 0 });
     },
   });
+  linkProviderFields(form);
   form.scrollTop = 0;  // open at the theme picker, not at the first text field
 }
 

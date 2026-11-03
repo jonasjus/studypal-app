@@ -687,3 +687,5 @@ body:has(#overall:not([hidden])) #toasts { bottom: 64px; }
   .note-list ul { max-height: 220px; }
   .entry { grid-template-columns: 1fr; gap: 0; }
 }
+.q-type { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.q-noanswer { margin: 8px 0 0; font-size: 13px; }

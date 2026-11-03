@@ -55,7 +55,7 @@ def _smoke_test(window) -> None:
     import time
 
     found = "nothing"
-    try:  # the exam reader's PDF and image libraries made it into the build
+    try:  # the exam reader's PDF, image and schema libraries made it into the build
         import io
 
         import pypdfium2 as pdfium
@@ -65,7 +65,10 @@ def _smoke_test(window) -> None:
         pdf, out = pdfium.PdfDocument.new(), io.BytesIO()
         pdf.new_page(595, 842)
         pdf.save(out)
-        pdf_check = "pages on" if pages.pdf_pages("check.pdf", out.getvalue()) else "pages off"
+        from .core.logic.questions import Question
+
+        Question(number="1", text="check")  # Pydantic (and its compiled core) made it in too
+        pdf_check = "pages on" if pages.pdf_text_pages("check.pdf", out.getvalue())[0].image else "pages off"
     except Exception as e:
         pdf_check = f"pages off ({e})"
     for _ in range(40):

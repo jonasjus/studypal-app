@@ -1,0 +1,5 @@
+STK310 spring 2024 - solutions
+1 a) By the factorisation theorem the joint pmf is g(T, lambda) h(x), so T is sufficient.
+1 b) The log-likelihood is maximised at the sample mean, so the MLE is the sample mean.
+Question 2: A confidence interval covers the true value in a given share of repeated samples;
+a credible interval holds the parameter with a given posterior probability.

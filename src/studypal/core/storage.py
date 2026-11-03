@@ -6,6 +6,7 @@ to be saved. Dates are stored as ISO strings in local time ("2026-12-10", "2026-
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -544,6 +545,14 @@ MIGRATIONS: list[str] = [
     drop table pomodoro_run;
     alter table pomodoro_run_new rename to pomodoro_run;
     """ + "".join(_sync_columns(t) for t in PROJECT_TABLES),
+    # StudyPal only: what the exam reader extracts about each question, for writing exams like them.
+    # topic_tags is a JSON list; answer may now be null (the solutions don't answer it).
+    """
+    alter table exam_question add column parent_number text default '';
+    alter table exam_question add column question_type text default '';
+    alter table exam_question add column topic_tags text default '[]';
+    alter table exam_question add column has_figure integer default 0;
+    """,
 ]
 
 
@@ -557,6 +566,11 @@ def _statements(script: str) -> list[str]:
                 out.append(buf.strip())
             buf = ""
     return out
+
+
+def _answer(answer: str | None) -> str | None:
+    """An answer as stored: None (no answer known) stays None, a blank one becomes None too."""
+    return answer.strip() or None if answer is not None else None
 
 
 def _split_tags(text: str) -> list[str]:
@@ -1531,9 +1545,15 @@ class Store:
 
     @staticmethod
     def _question(r: sqlite3.Row) -> ExamQuestion:
+        try:
+            tags = [str(t) for t in json.loads(r["topic_tags"] or "[]") if str(t).strip()]
+        except (ValueError, TypeError):
+            tags = []
         return ExamQuestion(id=r["id"], exam_id=r["exam_id"], number=r["number"] or "", prompt=r["prompt"] or "",
-                            answer=r["answer"] or "", marks=r["marks"] or "", topic_id=r["topic_id"],
-                            result=r["result"] or "", note=r["note"] or "", why=r["why"] or "")
+                            answer=r["answer"], marks=r["marks"] or "", topic_id=r["topic_id"],
+                            result=r["result"] or "", note=r["note"] or "", why=r["why"] or "",
+                            parent_number=r["parent_number"] or "", question_type=r["question_type"] or "",
+                            topic_tags=tags, has_figure=bool(r["has_figure"]))
 
     def add_exam(self, exam: Exam) -> Exam:
         if not exam.title.strip():
@@ -1600,9 +1620,11 @@ class Store:
         pos = c.execute("select coalesce(max(position), -1) + 1 from exam_question where exam_id = ?",
                         (q.exam_id,)).fetchone()[0]
         cur = c.execute("insert into exam_question (exam_id, number, prompt, answer, marks, topic_id, result, note, why,"
-                        " position) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (q.exam_id, q.number.strip(), q.prompt.strip(), q.answer.strip(), q.marks.strip(), q.topic_id,
-                         q.result, q.note.strip(), q.why.strip(), pos))
+                        " position, parent_number, question_type, topic_tags, has_figure)"
+                        " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (q.exam_id, q.number.strip(), q.prompt.strip(), _answer(q.answer), q.marks.strip(), q.topic_id,
+                         q.result, q.note.strip(), q.why.strip(), pos, q.parent_number.strip(), q.question_type,
+                         json.dumps(q.topic_tags, ensure_ascii=False), int(q.has_figure)))
         return cur.lastrowid  # type: ignore[return-value]
 
     def replace_questions(self, exam_id: int, questions: list[ExamQuestion]) -> None:
@@ -1618,9 +1640,11 @@ class Store:
             raise StorageError("That isn't a way a question can go.")
         with self._tx() as c:
             c.execute("update exam_question set number = ?, prompt = ?, answer = ?, marks = ?, topic_id = ?, result = ?,"
-                      " note = ?, why = ? where id = ?",
-                      (q.number.strip(), q.prompt.strip(), q.answer.strip(), q.marks.strip(), q.topic_id, q.result,
-                       q.note.strip(), q.why.strip(), q.id))
+                      " note = ?, why = ?, parent_number = ?, question_type = ?, topic_tags = ?, has_figure = ?"
+                      " where id = ?",
+                      (q.number.strip(), q.prompt.strip(), _answer(q.answer), q.marks.strip(), q.topic_id, q.result,
+                       q.note.strip(), q.why.strip(), q.parent_number.strip(), q.question_type,
+                       json.dumps(q.topic_tags, ensure_ascii=False), int(q.has_figure), q.id))
         return q
 
     def delete_question(self, question_id: int) -> None:

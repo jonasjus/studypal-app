@@ -29,10 +29,11 @@ from typing import Any
 
 from .core import alerts, cloud, files, notifier, sound
 from .core.files import FileError
-from .core import pages
-from .core.groq import DEFAULT_MODEL, IMAGES_PER_REQUEST, KEY_URL, VISION_MODEL, Groq, GroqError
-from .core.groq import MODELS as GROQ_MODELS
-from .core.groq import Image as GroqImage
+from .core import ingest
+from .core.generate import generate_exam
+from .core.llm import PROVIDERS, LLMError, provider_from
+from .core.llm import chosen as llm_chosen
+from .core.logic import questions as question_logic
 from .core.pages import PageError
 from .core.logic import exams as exam_logic
 from .core.cloud import Accounts, Client, CloudError, Offline, SignedOut
@@ -76,6 +77,8 @@ from .core.models import (
 )
 from .core.storage import StorageError, Store
 
+TYPE_LABELS = {"short_answer": "Short answer", "calculation": "Calculation", "proof": "Proof",
+               "multiple_choice": "Multiple choice", "true_false": "True or false", "essay": "Essay", "code": "Code"}
 CITE_FIELDS = ("kind", "year", "publisher", "edition", "journal", "volume", "issue", "pages", "link")
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
@@ -423,7 +426,7 @@ class Api:
         self._pending: list[str] = []  # messages from the background check, for the window's next tick
         self._pending_changed = False
         self._awake = sound.KeepAwake()
-        # Groq jobs running in the background ("read:<exam id>", "make:<course id>") -> what they're doing now.
+        # Model jobs running in the background ("read:<exam id>", "make:<course id>") -> what they're doing now.
         self._jobs: dict[str, str] = {}
         self._greeting = self._pick_greeting()
 
@@ -723,7 +726,7 @@ class Api:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(prefs), encoding="utf-8")
-        os.chmod(tmp, 0o600)  # it can hold the Groq key
+        os.chmod(tmp, 0o600)  # it can hold API keys
         tmp.replace(path)
 
     @action
@@ -1315,7 +1318,10 @@ class Api:
             "questions": [{"id": q.id, "number": q.number, "prompt": q.prompt, "answer": q.answer, "marks": q.marks,
                            "topic_id": q.topic_id if q.topic_id in topics else None,
                            "topic": topics.get(q.topic_id) if q.topic_id else None,
-                           "result": q.result, "note": q.note, "why": q.why} for q in questions],
+                           "result": q.result, "note": q.note, "why": q.why, "parent_number": q.parent_number,
+                           "question_type": q.question_type, "type_label": TYPE_LABELS.get(q.question_type, ""),
+                           "tags": [t for t in q.topic_tags if t != topics.get(q.topic_id)],
+                           "has_figure": q.has_figure} for q in questions],
             "counts": {**counts, "unmarked": len(questions) - sum(counts.values()), "total": len(questions)},
         }
 
@@ -1341,7 +1347,7 @@ class Api:
                       for t in tallies],
             "weak_open": len(self._store.list_weak_spots(course_id)),
             "shaky_topics": [t.title for t in topic_list if t.confidence <= 2],
-            "ai": bool(self._groq_key()),
+            "ai": self._ai_ready(),
         }
 
     @action
@@ -1477,54 +1483,84 @@ class Api:
                                            description=f"{exam.title}, question {q.number}: {what}"))
         return {"ok": True, "message": "Added to weak spots."}
 
-    # Groq: the API key belongs to the computer (prefs.json), like the theme, and isn't synced.
+    # The model: the provider and its API key belong to the computer (prefs.json), like the theme, and
+    # aren't synced. GEMINI_API_KEY / GROQ_API_KEY in the environment win over Settings.
 
-    def _groq_key(self) -> str:
-        return str(self._prefs().get("groq_key") or os.environ.get("GROQ_API_KEY") or "").strip()
+    def _provider_name(self) -> str:
+        return llm_chosen(self._prefs())
 
-    def _groq(self) -> Groq:
-        key = self._groq_key()
-        if not key:
-            raise UserError("Add your Groq API key in Settings first.")
-        return Groq(key, str(self._prefs().get("groq_model") or DEFAULT_MODEL))
+    def _key(self, which: str) -> str:
+        """A provider's key: the environment variable first (GEMINI_API_KEY, GROQ_API_KEY), then Settings."""
+        env = PROVIDERS[which].key_env
+        return ((os.environ.get(env, "") if env else "") or str(self._prefs().get(f"{which}_key") or "")).strip()
+
+    def _ai_ready(self) -> bool:
+        which = self._provider_name()
+        return which == "ollama" or bool(self._key(which))
+
+    def _llm(self):
+        try:
+            return provider_from(self._prefs())
+        except LLMError as e:
+            raise UserError(str(e)) from None
 
     @action
     def ai_settings(self) -> dict:
-        key = self._groq_key()
-        return {"has_key": bool(key), "key_hint": f"…{key[-4:]}" if len(key) > 8 else "",
-                "model": str(self._prefs().get("groq_model") or DEFAULT_MODEL),
-                "models": [list(m) for m in GROQ_MODELS], "key_url": KEY_URL}
+        prefs = self._prefs()
+        keys = {}
+        for which, preset in PROVIDERS.items():
+            if not preset.key_env:
+                continue
+            key = self._key(which)
+            from_env = bool(os.environ.get(preset.key_env, "").strip())
+            keys[which] = {"has_key": bool(key), "key_hint": f"…{key[-4:]}" if len(key) > 8 else "",
+                           "from_env": from_env, "env": preset.key_env, "key_url": preset.key_url, "name": preset.name}
+        return {"provider": self._provider_name(),
+                "providers": [[k, f"{p.name} ({p.model})" if p.key_env else p.name] for k, p in PROVIDERS.items()],
+                "keys": keys, "ollama_model": str(prefs.get("ollama_model") or PROVIDERS["ollama"].model),
+                "ollama_url": str(prefs.get("ollama_url") or PROVIDERS["ollama"].base_url)}
 
     @action
     def save_ai(self, data: dict) -> None:
+        """data: provider, keys {gemini: "...", groq: "..."} (blank keeps the saved one), forget [providers],
+        ollama_model, ollama_url."""
         prefs = self._prefs()
-        prefs.pop("gemini_key", None)  # from before StudyPal used Groq
-        prefs.pop("gemini_model", None)
-        key = _text(data, "key")
-        if data.get("forget"):
-            prefs.pop("groq_key", None)
-        elif key:
-            if not re.fullmatch(r"gsk_[A-Za-z0-9]{20,200}", key):
-                raise UserError("That doesn't look like a Groq API key (they start with gsk_). Copy the whole key "
-                                "from the Groq console.")
-            prefs["groq_key"] = key
-        model = _text(data, "model")
+        which = _text(data, "provider") or self._provider_name()
+        if which not in PROVIDERS:
+            raise UserError("Pick a provider.")
+        prefs["ai_provider"] = which
+        for name in data.get("forget") or []:
+            prefs.pop(f"{name}_key", None)
+        for name, key in (data.get("keys") or {}).items():
+            key = str(key or "").strip()
+            if not key or name not in PROVIDERS or not PROVIDERS[name].key_env:
+                continue
+            preset = PROVIDERS[name]
+            if preset.key_pattern and not re.fullmatch(preset.key_pattern, key):
+                raise UserError(f"That doesn't look like a {preset.name} API key. Copy the whole key from {preset.key_url}.")
+            prefs[f"{name}_key"] = key
+        model = _text(data, "ollama_model")
         if model:
-            if not re.fullmatch(r"[a-z0-9./\-]{3,80}", model):
-                raise UserError("That isn't a Groq model.")
-            prefs["groq_model"] = model
+            if not re.fullmatch(r"[A-Za-z0-9._:/\-]{2,80}", model):
+                raise UserError("That isn't an Ollama model name (like gemma3 or qwen2.5vl:7b).")
+            prefs["ollama_model"] = model
+        url = _text(data, "ollama_url")
+        if url:
+            if not re.fullmatch(r"https?://[^\s]+", url):
+                raise UserError("Ollama's address should look like http://localhost:11434/v1.")
+            prefs["ollama_url"] = url
         self._write_prefs(prefs)
 
     def _ai_call(self, job: str, work: Callable[[], dict]) -> dict:
-        """Run a Groq job in the background: like @action, but the lock is only held for the database parts
-        inside `work`, not while Groq works (reading an exam takes a request per few pages), so the window
+        """Run a model job in the background: like @action, but the lock is only held for the database parts
+        inside `work`, not while the model works (reading an exam can take several requests), so the window
         keeps working. `ai_jobs` tells the window how far it's got."""
         if job in self._jobs:
-            return {"error": "Groq is already on it. Wait for it to finish."}
+            return {"error": "That's already being worked on. Wait for it to finish."}
         self._jobs[job] = "Starting…"
         try:
             return work()
-        except (GroqError, PageError, UserError, StorageError, FileError, CloudError) as e:
+        except (LLMError, PageError, UserError, StorageError, FileError, CloudError) as e:
             return {"error": str(e)}
         except Exception as e:  # a bug: say so instead of leaving the page waiting
             return {"error": f"Something went wrong: {e}"}
@@ -1532,7 +1568,7 @@ class Api:
             self._jobs.pop(job, None)
 
     def ai_jobs(self) -> dict:
-        """The Groq jobs running now, with what each is doing ("Reading pages 4–6 of 8"). No lock: it's
+        """The model jobs running now, with what each is doing ("Transcribing pages 4–6 of 8"). No lock: it's
         asked every second while a job runs, and must answer even while a sync holds the database."""
         return dict(self._jobs)
 
@@ -1552,20 +1588,12 @@ class Api:
             raise UserError(f"“{f.name}” hasn't arrived on this computer yet. Wait for StudyPal to sync, then try again.")
         return path.read_bytes()
 
-    @staticmethod
-    def _batches(f: ExamFile, data: bytes) -> list[tuple[list[GroqImage], int, int, int, str]]:
-        """A file as what Groq reads in one request each: (page images, first page, last page, pages, text)."""
-        images, text = pages.split(f.name, f.mime, data)
-        if text:
-            return [([], 1, 1, 1, text[:60_000])]
-        n = IMAGES_PER_REQUEST
-        return [([GroqImage(f.name, img) for img in images[i:i + n]], i + 1, min(i + n, len(images)), len(images), "")
-                for i in range(0, len(images), n)]
-
     def read_exam(self, exam_id: int) -> dict:
-        """Groq reads a past exam's files a few pages at a time and lists its questions, with answers (from the
-        solutions if there are any), topics and, when your own answers are added, how each one went. Replaces
-        the questions listed before."""
+        """Read a past exam into questions (core/ingest.py): the files become Markdown (scanned pages and
+        maths read by the model), the model lists the questions and the solutions' answers, and they're matched
+        by number; your own answers, if added, mark how each went. Replaces the questions listed before."""
+        job = f"read:{exam_id}"
+
         def work() -> dict:
             with self._lock:
                 store = self._store
@@ -1574,82 +1602,67 @@ class Api:
                     raise UserError("That exam no longer exists.")
                 course = store.get_course(exam.course_id)
                 topics = store.list_topics(exam.course_id)
-                exam_files = store.list_exam_files(exam_id)
+                order = {"exam": 0, "solution": 1, "attempt": 2}
+                exam_files = sorted(store.list_exam_files(exam_id), key=lambda f: order.get(f.role, 3))
                 if not any(f.role == "exam" for f in exam_files):
                     raise UserError("Add the exam paper itself first (a PDF or photos).")
-                loaded = {f.id: self._read_bytes(store, f) for f in exam_files}
-            groq = self._groq()
-            by_role = {role: [f for f in exam_files if f.role == role] for role in FILE_ROLES}
-            system, L = exam_logic.SYSTEM, exam_logic
-            job = f"read:{exam_id}"
+                sources = [ingest.SourceFile(f.name, f.mime, self._read_bytes(store, f), f.role) for f in exam_files]
+            provider = self._llm()
 
-            def step(what: str, first: int, last: int, total: int, text: str) -> None:
-                where = "" if text else f", page {first} of {total}" if first == last else f", pages {first}–{last} of {total}"
-                self._jobs[job] = f"{what}{where}"
+            def progress(text: str) -> None:
+                self._jobs[job] = text
 
-            self._jobs[job] = "Drawing the pages…"
-
-            # 1. The questions, off the exam paper's pages.
-            found: list[dict] = []
-            for f in by_role["exam"]:
-                for images, first, last, total, text in self._batches(f, loaded[f.id]):  # type: ignore[index]
-                    step("Reading the questions", first, last, total, text)
-                    prompt = L.pages_prompt(course, topics, f.name, first, last, total, found, text)  # type: ignore[arg-type]
-                    answer = groq.ask([*images, prompt], L.PAGES_SCHEMA, system, 0.1, model=VISION_MODEL)
-                    L.merge_questions(found, [q for q in answer.get("questions") or [] if isinstance(q, dict)])
-            found = [q for q in found if q["prompt"]]
-            if not found:
-                raise UserError("Groq didn't find any questions in the exam. Is the right file marked as the exam?")
-            for q in found:
-                q.update(answer="", result="", note="")
-
-            # 2. The answers: from the solutions, or written for you.
-            if by_role["solution"]:
-                for f in by_role["solution"]:
-                    for images, first, last, total, text in self._batches(f, loaded[f.id]):  # type: ignore[index]
-                        step("Reading the solutions", first, last, total, text)
-                        prompt = L.answers_prompt(course, found, f.name, first, last, total, text)  # type: ignore[arg-type]
-                        answer = groq.ask([*images, prompt], L.ANSWERS_SCHEMA, system, 0.1, model=VISION_MODEL)
-                        L.merge_field(found, [a for a in answer.get("answers") or [] if isinstance(a, dict)], "answer")
-            else:
-                self._jobs[job] = "Writing answers (there are no solutions)"
-                answer = groq.ask([L.write_answers_prompt(course, topics, found)], L.ANSWERS_SCHEMA, system, 0.2)  # type: ignore[arg-type]
-                L.merge_field(found, [a for a in answer.get("answers") or [] if isinstance(a, dict)], "answer")
-
-            # 3. How each question went, from your own answers (only from them: never guessed).
-            score = ""
-            for f in by_role["attempt"]:
-                for images, first, last, total, text in self._batches(f, loaded[f.id]):  # type: ignore[index]
-                    step("Marking your answers", first, last, total, text)
-                    prompt = L.marks_prompt(course, found, f.name, first, last, total, text)  # type: ignore[arg-type]
-                    answer = groq.ask([*images, prompt], L.MARKS_SCHEMA, system, 0.1, model=VISION_MODEL)
-                    results = [r for r in answer.get("results") or [] if isinstance(r, dict)]
-                    by = {L.number_key(q["number"]): q for q in found}
-                    for r in results:
-                        q = by.get(L.number_key(str(r.get("number") or "")))
-                        if q is not None and r.get("result") in RESULTS:
-                            q["result"] = r["result"]
-                    L.merge_field(found, results, "note")
-                    score = score or str(answer.get("score") or "").strip()[:30]
-
-            questions = [ExamQuestion(
-                exam_id=exam_id, number=q["number"], prompt=q["prompt"], answer=q["answer"], marks=q["marks"],
-                topic_id=self._topic_by_title(topics, q["topic"]), result=q["result"],
-                note=q["note"] if q["result"] else "",
-            ) for q in found]
+            result = ingest.ingest(provider, course, topics, sources, exam_id, progress)  # type: ignore[arg-type]
+            questions = []
+            for q in result.questions:
+                result_, note = result.results.get(question_logic.number_key(q.number), ("", ""))
+                topic_id = next((t for t in (self._topic_by_title(topics, tag) for tag in q.topic_tags) if t), None)
+                questions.append(ExamQuestion(
+                    exam_id=exam_id, number=q.number, prompt=q.text, answer=q.answer,
+                    marks=f"{q.points:g}" if q.points is not None else "", topic_id=topic_id, result=result_,
+                    note=note, parent_number=q.parent_number or "", question_type=q.question_type,
+                    topic_tags=q.topic_tags, has_figure=q.has_figure))
             with self._lock:
                 if self._store is not store or store.get_exam(exam_id) is None:
-                    raise UserError("The exam changed while Groq was reading it. Try again.")
+                    raise UserError("The exam changed while it was being read. Try again.")
                 store.replace_questions(exam_id, questions)
-                if score and not exam.score:
-                    store.update_exam(replace(exam, score=score))
+                if result.score and not exam.score:
+                    store.update_exam(replace(exam, score=result.score))
+            answered = sum(1 for q in questions if q.answer)
             marked = sum(1 for q in questions if q.result)
-            return {"ok": True, "message": f"{exam.title}: found {len(questions)} question{'s' if len(questions) != 1 else ''}"
-                    + (f" and marked {marked} from your answers." if marked else ".")}
-        return self._ai_call(f"read:{exam_id}", work)
+            has_solutions = any(f.role == "solution" for f in sources)
+            parts = [f"{exam.title}: found {len(questions)} question{'s' if len(questions) != 1 else ''}"]
+            if has_solutions:
+                parts.append(f"{answered} with an answer from the solutions")
+            if marked:
+                parts.append(f"marked {marked} from your answers")
+            message = ", ".join(parts) + "."
+            if result.unmatched:
+                message += (f" The solutions also answer {', '.join(result.unmatched[:5])}, which didn't match a question"
+                            " number: check the numbering.")
+            if result.dropped:
+                message += f" {result.dropped} came back incomplete and were left out."
+            if result.kept_text:
+                message += (f" {result.kept_text} page{'s' if result.kept_text != 1 else ''} with maths had more than "
+                            f"{provider.name} can write out in one answer on your plan, so {'their' if result.kept_text != 1 else 'its'}"
+                            " maths is plain text instead of formulas.")
+            return {"ok": True, "message": message}
+        return self._ai_call(job, work)
+
+    def _weak_topics(self, topics: list[Topic], tallies: list, focus: str, chosen: list[str]) -> list[str]:
+        """The topics a practice exam is about, most important first."""
+        if focus == "topics":
+            return chosen
+        titles = [t.title for t in topics]
+        if focus == "struggles":
+            weak = [t.title for t in tallies if t.weight > 0 and t.title]
+            weak += [t.title for t in sorted(topics, key=lambda t: t.confidence) if t.confidence <= 2 and t.title not in weak]
+            if weak:
+                return weak[:6] + [t for t in titles if t not in weak][:2]  # and a little of the rest
+        return titles
 
     def make_exam(self, data: dict) -> dict:
-        """Groq writes a practice exam from the course's past exams (the questions read from them), aimed at
+        """Write a practice exam with `generate_exam`: past questions on each weak topic as examples, aimed at
         what went badly before. data: course_id, size (short/half/full), focus (struggles/balanced/topics),
         topic_ids, wishes."""
         def work() -> dict:
@@ -1665,45 +1678,48 @@ class Api:
                     raise UserError("That subject no longer exists.")
                 topics = store.list_topics(course_id)  # type: ignore[arg-type]
                 wanted_ids = {int(i) for i in data.get("topic_ids") or []}
-                focus_topics = [t.title for t in topics if t.id in wanted_ids]
-                if focus == "topics" and not focus_topics:
+                chosen = [t.title for t in topics if t.id in wanted_ids]
+                if focus == "topics" and not chosen:
                     raise UserError("Pick the topics the exam should be about.")
                 exams = store.list_exams(course_id)  # type: ignore[arg-type]
-                questions = self._marked_questions(course_id, store)  # type: ignore[arg-type]
-                struggles = exam_logic.struggle_summary(questions, topics, store.list_weak_spots(course_id))
+                marked = self._marked_questions(course_id, store)  # type: ignore[arg-type]
+                struggles = exam_logic.struggle_summary(marked, topics, store.list_weak_spots(course_id))
+                tallies = exam_logic.tally(marked, {t.id: t.title for t in topics})  # type: ignore[misc]
                 earlier = [q.prompt for e in exams if e.kind == "practice" for q in store.list_questions(e.id)]  # type: ignore[arg-type]
                 number = sum(1 for e in exams if e.kind == "practice") + 1
-                # Past exams as the questions read from them, newest first.
-                past, unread = [], 0
-                for e in exams:
+                past: list[tuple[str, ExamQuestion]] = []
+                counts: list[int] = []
+                unread = 0
+                for e in exams:  # newest first
                     if e.kind != "past":
                         continue
                     qs = store.list_questions(e.id)  # type: ignore[arg-type]
+                    past += [(e.title, q) for q in qs]
                     if qs:
-                        past.append((e.title, e.notes, qs))
+                        counts.append(len(qs))
                     else:
                         unread += 1
-            prompt = exam_logic.make_prompt(course, topics, past, struggles, size, focus, focus_topics,
-                                            _text(data, "wishes"), earlier, number)
+            typical = round(sum(counts) / len(counts)) if counts else 10
+            n = {"short": 5, "half": max(3, round(typical / 2)), "full": max(4, typical)}[size]
             self._jobs[f"make:{course_id}"] = "Writing the questions and solutions"
-            answer = self._groq().ask([prompt], exam_logic.MAKE_SCHEMA, system=exam_logic.SYSTEM)
-            made = [ExamQuestion(
-                exam_id=0, number=str(q.get("number") or "").strip()[:20], prompt=str(q.get("prompt") or ""),
-                answer=str(q.get("answer") or ""), marks=str(q.get("marks") or "").strip()[:20],
-                topic_id=self._topic_by_title(topics, str(q.get("topic") or "")), why=str(q.get("why") or ""),
-            ) for q in answer.get("questions") or [] if isinstance(q, dict) and q.get("prompt")]
-            if not made:
-                raise UserError("Groq didn't write any questions. Try again.")
+            made = generate_exam(self._weak_topics(topics, tallies, focus, chosen), n, provider=self._llm(),
+                                 course=course, topics=topics, past=past, struggles=struggles,
+                                 wishes=_text(data, "wishes"), earlier=earlier, number=number)
+            questions = [ExamQuestion(
+                exam_id=0, number=q.number, prompt=q.text, answer=q.answer, why=q.why or "",
+                marks=f"{q.points:g}" if q.points is not None else "", parent_number=q.parent_number or "",
+                question_type=q.question_type, topic_tags=q.topic_tags, has_figure=q.has_figure,
+                topic_id=next((t for t in (self._topic_by_title(topics, tag) for tag in q.topic_tags) if t), None),
+            ) for q in made.questions]
             with self._lock:
                 if self._store is not store or store.get_course(course_id) is None:  # type: ignore[arg-type]
-                    raise UserError("The subject changed while Groq was writing. Try again.")
-                title = " ".join(str(answer.get("title") or "").split())[:120] or f"Practice exam {number}"
-                exam = store.add_exam(Exam(course_id=course_id, title=title, kind="practice",  # type: ignore[arg-type]
-                                           notes=str(answer.get("intro") or "")))
-                store.replace_questions(exam.id, made)  # type: ignore[arg-type]
+                    raise UserError("The subject changed while the exam was being written. Try again.")
+                exam = store.add_exam(Exam(course_id=course_id, title=made.title, kind="practice",  # type: ignore[arg-type]
+                                           notes=made.intro))
+                store.replace_questions(exam.id, questions)  # type: ignore[arg-type]
             note = (f" ({unread} past exam{'s' if unread != 1 else ''} not used: press Read questions on "
                     f"{'them' if unread != 1 else 'it'} first)") if unread else ""
-            return {"ok": True, "id": exam.id, "course_id": course_id, "message": f"“{title}” is ready{note}."}
+            return {"ok": True, "id": exam.id, "course_id": course_id, "message": f"“{made.title}” is ready{note}."}
         return self._ai_call(f"make:{_int(data, 'course_id')}", work)
 
     @action

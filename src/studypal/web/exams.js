@@ -1,7 +1,7 @@
 "use strict";
 
 // The exams page: past exams (with their files and how each question went) and practice exams that
-// Groq writes from them. Loaded after app.js; uses its helpers, and adds to its `actions`.
+// the model writes from them. Loaded after app.js; uses its helpers, and adds to its `actions`.
 
 // ---------- drawing ----------
 
@@ -32,12 +32,19 @@ function questionBlock(q, exam) {
   const seg = ["ok", "partial", "missed"].map((r) => `<button class="res ${r}${q.result === r ? " on" : ""}" data-act="q-result"
       data-id="${q.id}" data-result="${q.result === r ? "" : r}" aria-pressed="${q.result === r}"
       title="${q.result === r ? "Click again to clear" : `Mark as ${RESULT_LABELS[r].toLowerCase()}`}">${RESULT_LABELS[r]}</button>`).join("");
-  const answerLabel = exam.kind === "practice" ? "Solution" : exam.has_solution ? "Answer (from the solutions)" : "Suggested answer (by Groq)";
+  const answerLabel = exam.kind === "practice" ? "Solution" : exam.has_solution ? "Answer (from the solutions)" : "Answer";
+  // A read exam never guesses an answer: say so instead.
+  const noAnswer = exam.kind === "past" && !q.answer
+    ? `<p class="faint q-noanswer">No solution${exam.has_solution ? ": the solutions don't answer this one" : " yet: add the solutions and read the exam again"}.</p>` : "";
+  const points = q.marks ? `${esc(q.marks)} ${/^\d+(\.\d+)?$/.test(q.marks) ? (q.marks === "1" ? "point" : "points") : ""}` : "";
   return `<div class="q${q.result ? ` r-${q.result}` : ""}">
     <div class="q-head">
       <span class="q-num">${esc(q.number || "·")}</span>
       ${q.topic ? `<span class="tag topic-tag">${esc(q.topic)}</span>` : ""}
-      ${q.marks ? `<span class="faint">${esc(q.marks)} ${/^\d+(\.\d+)?$/.test(q.marks) ? (q.marks === "1" ? "mark" : "marks") : ""}</span>` : ""}
+      ${(q.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}
+      ${q.type_label ? `<span class="q-type">${esc(q.type_label)}</span>` : ""}
+      ${q.has_figure ? `<span class="q-type" title="The question relies on a figure in the exam paper">${ICON_FILE} figure</span>` : ""}
+      ${points ? `<span class="faint">${points}</span>` : ""}
       <span class="q-res" role="group" aria-label="How did it go?">${seg}</span>
       <button class="icon-btn small" data-act="q-menu" data-id="${q.id}" aria-label="Question options">${ICONS.more}</button>
     </div>
@@ -45,7 +52,7 @@ function questionBlock(q, exam) {
     <div class="md q-prompt">${md(q.prompt) || '<p class="faint">No question text.</p>'}</div>
     ${q.note ? `<div class="q-note"><b>What went wrong:</b> ${esc(q.note)}</div>` : ""}
     ${q.answer ? `<details class="q-answer" data-id="${q.id}"${open ? " open" : ""}><summary>${answerLabel}</summary>
-      <div class="md">${md(q.answer)}</div></details>` : ""}
+      <div class="md">${md(q.answer)}</div></details>` : noAnswer}
   </div>`;
 }
 
@@ -58,15 +65,15 @@ function examPanel(e, d) {
   const canRead = e.kind === "past" && e.files.some((f) => f.role === "exam");
   const readBtn = state.jobs[`read:${e.id}`] ? jobLine(`read:${e.id}`)
     : canRead ? `<button class="btn small${e.counts.total ? " ghost" : ""}" data-act="read-exam" data-id="${e.id}"
-      title="Groq reads the files and lists the questions">${ICON_SPARK} ${e.counts.total ? "Read again" : "Read questions"}</button>` : "";
+      title="Reads the files and lists the questions, with the answers from the solutions">${ICON_SPARK} ${e.counts.total ? "Read again" : "Read questions"}</button>` : "";
   let body = "";
   if (open) {
     const intro = e.kind === "practice" && e.notes ? `<div class="md exam-intro">${md(e.notes)}</div>` : "";
     const notes = e.kind === "past" && e.notes ? `<p class="muted exam-notes">${esc(e.notes)}</p>` : "";
     const qs = e.questions.length ? e.questions.map((q) => questionBlock(q, e)).join("")
-      : `<p class="empty-small">${state.jobs[`read:${e.id}`] ? "Groq is reading the questions. They'll show up here when it's done."
+      : `<p class="empty-small">${state.jobs[`read:${e.id}`] ? "Reading the questions. They'll show up here when it's done."
         : canRead
-        ? (d.ai ? "Click <b>Read questions</b> and Groq lists them, with answers. Then mark how each one went." : "Set up Groq to have the questions listed for you, or add them by hand.")
+        ? (d.ai ? "Click <b>Read questions</b> to have them listed, with the answers from the solutions. Then mark how each one went." : "Set up a model to have the questions listed for you, or add them by hand.")
         : "Add the exam paper (a PDF or photos) so the questions can be read from it, or add them by hand."}
         <button class="btn small ghost" data-act="add-question" data-id="${e.id}">+ Add a question by hand</button></p>`;
     body = `${fileChips ? `<div class="file-chips">${fileChips}</div>` : ""}${notes}${intro}<div class="qs">${qs}</div>`;
@@ -105,11 +112,11 @@ function practicePanel(d) {
 function renderExams(d) {
   const c = d.course;
   const setup = d.ai ? "" : `<div class="panel panel-body ai-setup">
-      <div class="grow"><b>Set up Groq to read exams and write practice exams</b>
-      <p class="muted">Groq needs an API key, which is free. It takes a minute to get one.</p></div>
-      <button class="btn primary" data-act="ai-setup">Set up Groq</button></div>`;
+      <div class="grow"><b>Set up a model to read exams and write practice exams</b>
+      <p class="muted">Gemini or Groq need an API key, which is free and takes a minute to get. Ollama runs on this computer and needs none.</p></div>
+      <button class="btn primary" data-act="ai-setup">Set up</button></div>`;
   const past = d.past.length ? d.past.map((e) => examPanel(e, d)).join("")
-    : `<div class="panel panel-body"><p class="muted" style="margin:0">Add the past exams for ${esc(c.code)}: the exam paper, and the solutions and your own (graded) answers if you have them. Groq lists the questions, and you mark which ones went badly.</p></div>`;
+    : `<div class="panel panel-body"><p class="muted" style="margin:0">Add the past exams for ${esc(c.code)}: the exam paper, and the solutions and your own (graded) answers if you have them. StudyPal lists the questions, and you mark which ones went badly.</p></div>`;
   const writing = state.jobs[`make:${c.id}`]
     ? `<div class="panel panel-body job-card">${jobLine(`make:${c.id}`)}<span class="muted">You can keep using StudyPal meanwhile.</span></div>` : "";
   const practice = writing + (d.practice.length || writing ? d.practice.map((e) => examPanel(e, d)).join("")
@@ -194,7 +201,7 @@ function examForm(courseId, exam = null) {
   form.querySelector(".form-error").insertAdjacentHTML("beforebegin", `<div class="field"><span>Files</span>
       <div class="file-rows"></div>
       <div><button type="button" class="btn small" data-files="add">+ Add files…</button></div>
-      <small>PDFs or photos. Add the exam itself, and if you have them the solutions and your own answers (graded if possible): with your answers, Groq can tell which questions went badly.</small></div>`);
+      <small>PDFs or photos. Add the exam itself, and if you have them the solutions and your own answers (graded if possible): with your answers, StudyPal can tell which questions went badly.</small></div>`);
   const rows = form.querySelector(".file-rows");
   const draw = () => {
     const existing = (exam?.files || []).filter((f) => !removed.has(f.id));
@@ -256,28 +263,59 @@ function questionForm(examId, q = null) {
   });
 }
 
+// The model fields, in the setup form and in Settings: which provider, and its key or (Ollama) model.
 function aiFields(g) {
+  const keyField = (name) => {
+    const k = g.keys[name];
+    return { only: [name], name: `key_${name}`, label: `${k.name} API key`, type: "password", value: "",
+      placeholder: k.from_env ? `Taken from ${k.env}` : k.has_key ? `Saved (${k.key_hint || "hidden"}). Paste a new one to replace it` : "Paste your key here",
+      hint: `Free from <a href="${esc(k.key_url)}" target="_blank" rel="noopener">${esc(k.key_url.replace(/^https:\/\//, ""))}</a>. Kept on this computer only${k.from_env ? ` (${esc(k.env)} is set, and wins)` : ""}.` };
+  };
+  const forget = (name) => (g.keys[name].has_key && !g.keys[name].from_env
+    ? [{ only: [name], name: `forget_${name}`, label: `Remove the saved ${g.keys[name].name} key from this computer`, type: "checkbox", value: false }] : []);
   return [
-    { name: "ai_key", label: "Groq API key", type: "password", value: "",
-      placeholder: g.has_key ? `Saved (${g.key_hint || "hidden"}). Paste a new one to replace it` : "Paste your key here (gsk_…)",
-      hint: `Used to read exams and write practice exams. Get a free key at <a href="${esc(g.key_url)}" target="_blank" rel="noopener">console.groq.com/keys</a> (sign in, then <b>Create API Key</b>). It's kept on this computer only.` },
-    { name: "ai_model", label: "Model for writing practice exams", type: "select", value: g.model, options: g.models,
-      hint: "Exams are always read by Groq's model that can see images." },
-    ...(g.has_key ? [{ name: "ai_forget", label: "Remove the saved key from this computer", type: "checkbox", value: false }] : []),
+    { name: "ai_provider", label: "Model provider", type: "select", value: g.provider, options: g.providers,
+      hint: "Reads your exams (scanned pages and maths too) and writes practice exams." },
+    ...Object.keys(g.keys).flatMap((name) => [keyField(name), ...forget(name)]),
+    { only: ["ollama"], row: [
+      { name: "ollama_model", label: "Ollama model", value: g.ollama_model, placeholder: "gemma3", hint: "One that reads images, e.g. gemma3 or qwen2.5vl" },
+      { name: "ollama_url", label: "Address", value: g.ollama_url },
+    ] },
   ];
+}
+
+// Show only the chosen provider's fields.
+function linkProviderFields(form) {
+  const update = () => {
+    const which = form.querySelector("select[name=ai_provider]")?.value;
+    form.querySelectorAll("[data-only]").forEach((el) => { if (el.querySelector("[name^=key_], [name^=forget_], [name^=ollama_]")) el.hidden = !el.dataset.only.split(" ").includes(which); });
+  };
+  form.addEventListener("change", (e) => { if (e.target.name === "ai_provider") update(); });
+  update();
+}
+
+function aiValues(v, g) {
+  return {
+    provider: v.ai_provider,
+    keys: Object.fromEntries(Object.keys(g.keys).map((name) => [name, v[`key_${name}`] || ""])),
+    forget: Object.keys(g.keys).filter((name) => v[`forget_${name}`]),
+    ollama_model: v.ollama_model, ollama_url: v.ollama_url,
+  };
 }
 
 async function aiForm() {
   const g = await call("ai_settings");
-  openForm({
-    title: "Set up Groq", wide: true, submit: "Save",
-    intro: "StudyPal uses Groq to read your past exams and write new ones. It needs your own API key:<ol class=\"steps\"><li>Open <a href=\"" + esc(g.key_url) + "\" target=\"_blank\" rel=\"noopener\">console.groq.com/keys</a> and sign in.</li><li>Click <b>Create API Key</b> and copy it.</li><li>Paste it below.</li></ol>The free plan has per-minute and daily limits; StudyPal waits and carries on when it hits the per-minute one. Your exam pages are sent to Groq when it reads them.",
+  const form = openForm({
+    title: "Set up a model", wide: true, submit: "Save",
+    intro: "StudyPal uses a language model to read your past exams and write new ones. <b>Gemini</b> (Google) and <b>Groq</b> have free API keys: open the link under the key field, sign in, create a key and paste it here. <b>Ollama</b> runs a model on this computer instead: install it from ollama.com and download a model that reads images. Your exams are sent to the provider you pick (not with Ollama).",
     fields: aiFields(g),
     onSubmit: async (v) => {
-      if (!v.ai_key && !g.has_key) throw new UserError("Paste your API key first.");
-      return call("save_ai", { key: v.ai_key, model: v.ai_model, forget: !!v.ai_forget });
+      const k = g.keys[v.ai_provider];
+      if (k && !k.has_key && !v[`key_${v.ai_provider}`]) throw new UserError("Paste your API key first.");
+      return call("save_ai", aiValues(v, g));
     },
   });
+  linkProviderFields(form);
 }
 
 function makeExamForm(courseId) {
@@ -291,8 +329,8 @@ function makeExamForm(courseId) {
     d.weak_open ? plural(d.weak_open, "open weak spot") : ""].filter(Boolean);
   const form = openForm({
     title: "Make a practice exam", wide: true, submit: "Make exam",
-    intro: (uses.length ? `Groq uses ${uses.join(", ")}, and your topics.` : "There are no read past exams or marked questions yet, so Groq goes by your topics alone.")
-      + (unread ? ` ${unread === 1 ? "One past exam hasn't" : `${unread} past exams haven't`} been read yet: press <b>Read questions</b> on ${unread === 1 ? "it" : "them"} first so Groq can use ${unread === 1 ? "it" : "them"}.` : ""),
+    intro: (uses.length ? `It's written from ${uses.join(", ")}, and your topics: a few past questions on each topic are shown to the model as examples.` : "There are no read past exams or marked questions yet, so it goes by your topics alone.")
+      + (unread ? ` ${unread === 1 ? "One past exam hasn't" : `${unread} past exams haven't`} been read yet: press <b>Read questions</b> on ${unread === 1 ? "it" : "them"} first so they can be used ${unread === 1 ? "it" : "them"}.` : ""),
     fields: [
       { name: "size", label: "How long?", type: "choices", value: "short", options: [
         ["short", "Short", "4 to 6 questions, about 45 minutes"],
@@ -331,10 +369,10 @@ function makeExamForm(courseId) {
   update();
 }
 
-// ---------- Groq working in the background ----------
+// ---------- the model working in the background ----------
 
 // Reading an exam or writing one takes a while (a request per few pages). It runs while you carry on: the
-// exam shows a spinner with how far it's got, the top bar shows Groq is busy from any page, and a
+// exam shows a spinner with how far it's got, the top bar shows it's busy from any page, and a
 // message says when it's done. Keys are "read:<exam id>" and "make:<course id>", as in api.py.
 state.jobs = {};  // key -> {course, title, text, started}
 let jobsTimer = null;
@@ -353,8 +391,8 @@ function renderJobs() {
   const el = $("#jobs");
   if (!keys.length) { el.innerHTML = ""; return; }
   const first = state.jobs[keys[0]];
-  const what = keys.length > 1 ? `Groq is on ${keys.length} jobs`
-    : `Groq is ${keys[0].startsWith("make:") ? "writing" : "reading"} ${first.title}`;
+  const what = keys.length > 1 ? `${keys.length} jobs running`
+    : `${keys[0].startsWith("make:") ? "Writing" : "Reading"} ${first.title}`;
   el.innerHTML = `<button class="jobs-pill" data-act="open-job" data-course="${first.course}" title="Show the exams page">
     <span class="spinner small"></span><span>${esc(what)}</span></button>`;
   for (const key of keys) {

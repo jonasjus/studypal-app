@@ -12,8 +12,9 @@ dependencies = [
     "pywebview>=6.2",
     "certifi>=2025.1",
     "desktop-notifier>=6.2; sys_platform != 'darwin'",
-    "pypdfium2>=4.30",  # draws exam PDF pages as images for Groq, which can't read PDFs
+    "pypdfium2>=4.30",  # PDF text, and pages drawn as images for scans and maths
     "pillow>=11",  # shrinks photos and pages to JPEG
+    "pydantic>=2.9",  # checks the questions the model extracts
 ]
 
 [project.optional-dependencies]
