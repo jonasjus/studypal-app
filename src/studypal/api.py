@@ -157,6 +157,11 @@ def _overall(summaries: list[CourseSummary]) -> dict | None:
             "mood_words": mood_words, "total_time": format_minutes(sum(s.total_minutes for s in summaries))}
 
 
+# The fonts and text sizes in Settings (the page knows what each looks like: themes.js).
+FONTS = ("source", "atkinson", "system", "serif")
+TEXT_SIZES = ("small", "normal", "large", "larger")
+
+
 class UserError(ValueError):
     """Something the person typed can't be used; the message says why."""
 
@@ -400,7 +405,7 @@ def _project(p: Project) -> dict:
             "status_label": STATUS_LABELS.get(p.status, p.status), "tags": p.tags, "tags_text": ", ".join(p.tags),
             "start_on": _iso(p.start_on), "end_on": _iso(p.end_on), "color": p.color, "done": p.done,
             "start_label": _day(p.start_on) if p.start_on else "", "end_label": _day(p.end_on) if p.end_on else "",
-            "due_words": due}
+            "due_words": due, "due_days": (p.end_on - today).days if p.end_on else None}
 
 
 def _project_session(s: Session) -> dict:
@@ -723,6 +728,20 @@ class Api:
         prefs["theme"] = name
         # The window's colour before the page has loaded, so it opens without a flash.
         prefs["background"] = background if re.fullmatch(r"#[0-9a-fA-F]{6}", str(background or "")) else ""
+        self._write_prefs(prefs)
+
+    @action
+    def get_type(self) -> dict:
+        """The font and text size chosen on this computer."""
+        prefs = self._prefs()
+        return {"font": str(prefs.get("font") or "source"), "size": str(prefs.get("text_size") or "normal")}
+
+    @action
+    def set_type(self, font: str, size: str) -> None:
+        if font not in FONTS or size not in TEXT_SIZES:
+            raise UserError("That isn't a font or text size StudyPal offers.")
+        prefs = self._prefs()
+        prefs["font"], prefs["text_size"] = font, size
         self._write_prefs(prefs)
 
     def _write_prefs(self, prefs: dict) -> None:

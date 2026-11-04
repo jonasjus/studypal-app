@@ -152,22 +152,36 @@ function timeline(p, color, big = false) {
 }
 
 function progressWords(p) {
-  return `<span class="muted">${esc(p.words)}</span>${p.behind_words ? ` <span class="behind">· ${esc(p.behind_words)}</span>` : ""}`;
+  return `<span class="muted">${metaParts(p.words)}</span>${p.behind_words ? ` <span class="behind">${esc(p.behind_words)}</span>` : ""}`;
+}
+
+// "A · B · C" from the server, as separate pieces spaced apart.
+function metaParts(text) {
+  return `<span class="meta">${String(text || "").split(" · ").map((t) => `<span>${esc(t)}</span>`).join("")}</span>`;
+}
+
+// The countdown column of a timetable row: days to the exam, big.
+function countdown(p) {
+  const d = p.days_left;
+  if (d < 0) return `<div class="tt-when over"><span class="tt-num">Done</span></div>`;
+  if (d === 0) return `<div class="tt-when close"><span class="tt-num">Today</span></div>`;
+  return `<div class="tt-when${d <= 2 ? " close" : ""}"><span class="tt-num">${d}</span><span class="tt-unit">${d === 1 ? "day" : "days"}</span></div>`;
 }
 
 function subjectCard(c) {
   const close = c.progress.days_left >= 0 && c.progress.days_left <= 2;
-  return `<div class="card has-banner" style="--course:${esc(cc(c.color))}" tabindex="0" data-act="open-subject" data-id="${c.id}" data-kind="course">
-    ${courseBanner(c, "card")}
+  return `<div class="card" style="--course:${esc(cc(c.color))}" tabindex="0" data-act="open-subject" data-id="${c.id}" data-kind="course">
+    ${countdown(c.progress)}
     ${dragHandle()}
     <div class="card-top">
+      ${isPictureBanner(c) ? courseBanner(c, "card") : ""}
       <span class="code">${esc(c.code)}</span>
       <span class="card-name">${esc(c.name)}</span>
-      <span class="card-exam${close ? " close" : ""}">${esc(c.exam_words)} · ${esc(c.exam_label)}</span>
+      <span class="card-exam${close ? " close" : ""}">Exam ${esc(c.exam_label)}</span>
     </div>
     ${timeline(c.progress, cc(c.color))}
     <div class="card-words">${progressWords(c.progress)}</div>
-    <div class="card-facts">${esc(c.facts)}</div>
+    <div class="card-facts">${metaParts(c.facts)}</div>
     <div class="card-actions">
       <button class="btn small" data-act="start-studying" data-course="${c.id}">${ICONS.play} Study</button>
       <button class="btn small" data-act="log-time" data-course="${c.id}">Log time</button>
@@ -176,7 +190,7 @@ function subjectCard(c) {
 }
 
 function deadlineRow(d, { showCourse = true } = {}) {
-  const sub = [showCourse ? d.course_code : null, d.due_label].filter(Boolean).join(" · ");
+  const sub = [showCourse ? d.course_code : null, d.due_label].filter(Boolean).join("   ");
   const remove = d.is_course_exam ? "" : iconBtn("trash", "delete-deadline", `data-id="${d.id}"`, "Delete");
   return `<li class="row${d.done ? " done" : ""}">
     <input type="checkbox" class="check" data-act="toggle-deadline" data-id="${d.id}" ${d.done ? "checked" : ""} title="Mark done">
@@ -190,7 +204,7 @@ function deadlineRow(d, { showCourse = true } = {}) {
 }
 
 function weakRow(w, { showCourse = true } = {}) {
-  const where = [showCourse ? w.course_code : null, w.topic, w.age].filter(Boolean).join(" · ");
+  const where = [showCourse ? w.course_code : null, w.topic, w.age].filter(Boolean).join(", ");
   return `<li class="row${w.resolved ? " done" : ""}">
     <input type="checkbox" class="check" data-act="toggle-weak" data-id="${w.id}" ${w.resolved ? "checked" : ""} title="I've got this now">
     <div class="grow">
@@ -284,7 +298,7 @@ function renderOverview(d) {
 }
 
 function greeting(g) {
-  return `<div class="greeting"><h1>${esc(g.hello)}!</h1><p>${esc(g.text)}</p></div>`;
+  return `<div class="greeting"><h1>${esc(g.hello)}</h1><p>${esc(g.text)}</p></div>`;
 }
 
 // Every active subject together, in a thin bar pinned to the bottom of the window.
@@ -309,7 +323,7 @@ function topicRow(t) {
   return `<li class="row topic-row">
     <select class="status s-${t.status}" data-change="topic-status" data-id="${t.id}" aria-label="Status">${options}</select>
     <div class="grow"><div class="title">${esc(t.title)}</div>
-      <div class="sub ${t.stale ? "stale" : ""}">Last studied ${esc(t.last_studied)}${t.stale ? " · time for a refresher" : ""}</div></div>
+      <div class="sub ${t.stale ? "stale" : ""}">Last studied ${esc(t.last_studied)}${t.stale ? ", time for a refresher" : ""}</div></div>
     ${reading}
     <span class="conf" title="How confident you feel">${dots}</span>
     <span class="row-actions">${iconBtn("play", "start-studying", `data-course="${state.view.id}" data-topic="${t.id}"`, "Study this topic")}${iconBtn("edit", "edit-topic", `data-id="${t.id}"`, "Edit")}${iconBtn("trash", "delete-topic", `data-id="${t.id}"`, "Delete")}</span>
@@ -323,11 +337,11 @@ function renderSubject(d) {
     ? `<span class="mid" style="left:${pct(p.elapsed)}">today</span>` : "";
   const sessions = d.sessions.map((s) => `<li class="row">
       <div class="grow"><div class="title">${esc(s.started_label)}</div>
-        <div class="sub">${esc([s.topic, s.note].filter(Boolean).join(" · ") || "—")}</div></div>
+        <div class="sub">${esc([s.topic, s.note].filter(Boolean).join(": ") || "—")}</div></div>
       <span class="when">${esc(s.length)}</span>
       <span class="row-actions">${iconBtn("edit", "edit-session", `data-id="${s.id}"`, "Edit")}${iconBtn("trash", "delete-session", `data-id="${s.id}"`, "Delete")}</span>
     </li>`).join("");
-  const readingLabel = d.reading.required ? `Reading list · ${d.reading.read}/${d.reading.required}` : "Reading list";
+  const readingLabel = d.reading.required ? `Reading list ${d.reading.read}/${d.reading.required}` : "Reading list";
   return `<div class="subject-head" style="--course:${esc(cc(c.color))}">
     <div class="crumbs"><button class="btn small ghost" data-go="overview">${ICONS.back} All subjects</button></div>
     ${courseBanner(c, "page")}
@@ -336,7 +350,7 @@ function renderSubject(d) {
       ${c.done ? '<span class="tag">finished</span>' : ""}
       <div class="title-actions">
         <button class="btn" data-act="open-reading" data-id="${c.id}">${ICONS.book} ${esc(readingLabel)}</button>
-        <button class="btn" data-act="open-exams" data-id="${c.id}">${ICONS.exam} ${d.exams ? `Exams · ${d.exams}` : "Exams"}</button>
+        <button class="btn" data-act="open-exams" data-id="${c.id}">${ICONS.exam} ${d.exams ? `Exams ${d.exams}` : "Exams"}</button>
         <button class="btn" data-act="log-time" data-course="${c.id}">Log time</button>
         <button class="btn primary" data-act="start-studying" data-course="${c.id}">${ICONS.play} Start studying</button>
         <button class="icon-btn" data-act="course-menu" data-id="${c.id}" title="More" aria-label="More">${ICONS.more}</button>
@@ -344,7 +358,7 @@ function renderSubject(d) {
     </div>
     <div class="panel hero">
       <div class="hero-top">
-        <span class="big">${esc(c.exam_words)} · ${esc(c.exam_label)}</span>
+        <span class="big">${esc(c.exam_words)}, ${esc(c.exam_label)}</span>
         <span>${progressWords(p)}</span>
       </div>
       ${timeline(p, cc(c.color), true)}
@@ -354,7 +368,7 @@ function renderSubject(d) {
   </div>
   <div class="grid" style="--course:${esc(cc(c.color))}">
     <section class="panel">
-      <div class="section-head"><h2>Topics · ${d.topics_done}/${d.topics.length} done</h2>
+      <div class="section-head"><h2>Topics <span class="h-count">${d.topics_done} of ${d.topics.length} done</span></h2>
         <span><button class="btn small ghost" data-act="add-topics" data-course="${c.id}">+ Add several</button>
         <button class="btn small" data-act="add-topic" data-course="${c.id}">+ Add topic</button></span></div>
       ${d.topics.length ? `<ul class="list">${d.topics.map(topicRow).join("")}</ul>`
@@ -370,7 +384,7 @@ function renderSubject(d) {
         <ul class="list">${d.deadlines.map((x) => deadlineRow(x, { showCourse: false })).join("")}</ul>
       </div>
       <div class="panel">
-        <div class="section-head"><h2>Study time</h2><span class="muted">${esc(d.week_total)} this week · ${esc(d.total)} total</span></div>
+        <div class="section-head"><h2>Study time</h2><span class="muted">${esc(d.week_total)} this week, ${esc(d.total)} in total</span></div>
         ${sessions ? `<ul class="list">${sessions}</ul>` : '<p class="empty-small">No study time logged yet.</p>'}
       </div>
     </aside>
@@ -1320,16 +1334,24 @@ async function settingsForm() {
   const s = await call("get_settings");
   const where = await call("data_location");
   const g = await call("ai_settings");
-  const before = activeTheme.name;
+  const before = activeTheme.name, typeBefore = { ...activeType };
   const form = openForm({
     title: "Settings", wide: true,
-    onCancel: () => setTheme(before, false),
-    onChange: (el) => {
+    onCancel: () => { setTheme(before, false); setType(typeBefore, false); },
+    onChange: (el, f) => {
       if (el.name === "theme") setTheme(el.value, false);
+      if (el.name === "font" || el.name === "text_size") {
+        const v = formValues(f);
+        setType({ font: v.font, size: v.text_size }, false);
+      }
       if (el.name === "sound" && el.checked) call("preview_sound").catch(() => {});  // so you hear what it sounds like
     },
     fields: [
       { name: "theme", label: "Theme", type: "themes", value: before },
+      { row: [
+        { name: "font", label: "Font", type: "select", value: typeBefore.font, options: FONTS.map(([k, label]) => [k, label]) },
+        { name: "text_size", label: "Text size", type: "seg", value: typeBefore.size, options: TEXT_SIZES.map(([k, label]) => [k, label]) },
+      ] },
       { row: [
         { name: "focus_minutes", label: "Focus block (min)", type: "number", min: 1, value: s.focus_minutes },
         { name: "short_break_minutes", label: "Short break (min)", type: "number", min: 1, value: s.short_break_minutes },
@@ -1348,10 +1370,11 @@ async function settingsForm() {
       ...aiFields(g),
     ],
     extra: `<button type="button" class="btn left" data-act="export">Save a backup…</button>`,
-    intro: `<span class="faint" style="font-size:12px">Your data is stored in ${esc(where)}</span>`,
+    intro: `<span class="faint" style="font-size:.75rem">Your data is stored in ${esc(where)}</span>`,
     onSubmit: async (v) => {
       await setTheme(v.theme, true);
-      const rest = Object.fromEntries(Object.entries(v).filter(([k]) => k !== "theme" && !/^(ai_|key_|forget_|ollama_)/.test(k)));
+      await setType({ font: v.font, size: v.text_size }, true);
+      const rest = Object.fromEntries(Object.entries(v).filter(([k]) => !["theme", "font", "text_size"].includes(k) && !/^(ai_|key_|forget_|ollama_)/.test(k)));
       await call("save_ai", aiValues(v, g));
       return call("save_settings", { ...rest, notifications: rest.notifications ? 1 : 0, sound: rest.sound ? 1 : 0 });
     },
@@ -1765,6 +1788,16 @@ async function setTheme(name, save) {
 // Before anything is drawn: the last theme used here, so the window doesn't flash in the wrong colours.
 try { applyTheme(localStorage.getItem("studypal.theme") || "system"); } catch (e) { /* default */ }
 
+// The font and text size, the same way.
+async function setType(type, save) {
+  applyType(type);
+  try { localStorage.setItem("studypal.type", JSON.stringify(activeType)); } catch (e) { /* the saved one still loads */ }
+  if (save) {
+    try { await call("set_type", activeType.font, activeType.size); } catch (e) { toast(e.message, true); }
+  }
+}
+try { applyType(JSON.parse(localStorage.getItem("studypal.type") || "{}")); } catch (e) { /* default */ }
+
 // ---------- start ----------
 
 function start() {
@@ -1772,6 +1805,9 @@ function start() {
   // #subject/3 or #reading/3 opens straight onto that page (handy when working on the interface).
   const m = location.hash.match(/^#(subject|reading|exams|research|exam|take|attempt)\/(\d+)$/);
   if (m) state.view = { name: m[1], id: Number(m[2]) };
+  call("get_type").then((t) => {
+    if (t.font !== activeType.font || t.size !== activeType.size) setType(t, false);
+  }).catch(() => {});
   call("get_theme").then((name) => {
     if (name !== activeTheme.name) setTheme(name, false);
     // Daylight's colour changes, so remember the current one for the window's next opening.

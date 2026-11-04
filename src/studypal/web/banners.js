@@ -1,21 +1,8 @@
-// Course banners: a pattern made from the course (its colour, code and name pick the shapes and the
-// symbols drawn on it), or a picture of your own. course.banner is "" or "gen:<n>" for a pattern (n picks
+// Course banners: a sign made from the course (its code set large on its colour, over a faint pattern its
+// code and name pick), or a picture of your own. course.banner is "" or "gen:<n>" for a pattern (n picks
 // another one), else the key of the picture, fetched once and kept here.
 
 const bannerImages = {};  // key -> data URL ("" while it hasn't arrived on this computer)
-
-// Symbols for the kind of subject, found from words in its name and code.
-const BANNER_GLYPHS = [
-  [/math|calc|algebra|analys|geometr|statist|probab|matem|stk|mat\d/i, ["∑", "∫", "π", "√", "∞", "Δ", "λ", "∂", "≈", "x²"]],
-  [/comput|algorithm|program|software|data|machine|learning|\bai\b|neural|inf\d|dat\d|code|network|secur/i,
-    ["{ }", "</>", "01", "λ", "#", "=>", "[ ]", "f(x)", "&&", "∅"]],
-  [/physic|fys|quantum|mechanic|electr|optic|thermo/i, ["ħ", "ω", "∇", "Ψ", "c²", "Φ", "⊗", "Å", "ν", "→"]],
-  [/chem|kjemi|molec|organic/i, ["H₂O", "CO₂", "⌬", "pH", "Na⁺", "Cl⁻", "⇌", "mol", "O₂", "e⁻"]],
-  [/bio|genet|cell|ecolog|medic|anatom|neuro/i, ["ATCG", "◯", "⌬", "DNA", "∿", "RNA", "◉", "∴", "⁂", "≋"]],
-  [/econ|financ|business|account|market|manage|øko|bedrift/i, ["$", "€", "%", "↗", "Σ", "kr", "¢", "↘", "±", "∆"]],
-  [/law|jus|rett|polit|philos|filos|histor|ethic/i, ["§", "¶", "“ ”", "†", "∴", "⁂", "Ⅳ", "∵", "&", "※"]],
-  [/language|english|norsk|french|german|spansk|literat|språk|writing/i, ["Aa", "“ ”", "¶", "é", "ß", "ø", "…", "?", "!", "æ"]],
-];
 
 function bannerSeed(text) {
   let h = 2166136261;
@@ -43,7 +30,6 @@ function generatedBanner(c) {
   const rnd = bannerRandom(bannerSeed(`${c.code}|${c.name}|${variant}`));
   const color = esc(cc(c.color));
   const W = 1200, H = 200;
-  const id = `bn${bannerSeed(`${c.id}|${variant}`).toString(36)}`;
   const style = Math.floor(rnd() * 5);
   let shapes = "";
   if (style === 0) {  // soft waves
@@ -75,21 +61,14 @@ function generatedBanner(c) {
         fill="#fff" fill-opacity="${(0.04 + rnd() * 0.08).toFixed(2)}"/>`;
     }
   }
-  const words = `${c.name} ${c.code}`;
-  const glyphs = (BANNER_GLYPHS.find(([re]) => re.test(words)) || [null, [...new Set(String(c.code).replace(/\s/g, "").toUpperCase())]])[1];
-  let text = "";
-  for (let i = 0; i < 9; i++) {
-    const g = glyphs[Math.floor(rnd() * glyphs.length)];
-    const x = W * 0.45 + rnd() * W * 0.55, y = 40 + rnd() * (H - 30), size = 22 + rnd() * 38, r = rnd() * 30 - 15;
-    text += `<text x="${x.toFixed(0)}" y="${y.toFixed(0)}" font-size="${size.toFixed(0)}" transform="rotate(${r.toFixed(0)} ${x.toFixed(0)} ${y.toFixed(0)})"
-      fill="#fff" fill-opacity="${(0.14 + rnd() * 0.16).toFixed(2)}">${esc(g)}</text>`;
-  }
-  const angle = Math.floor(rnd() * 60) - 30;
+  // The course code, set large like a route sign and cropped by the edge; the pattern stays a faint texture.
+  const left = rnd() < 0.5;
+  const code = esc(String(c.code).toUpperCase());
   return `<svg class="banner-art" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-    <defs><linearGradient id="${id}" gradientTransform="rotate(${angle} .5 .5)">
-      <stop offset="0" stop-color="${color}"/><stop offset="1" stop-color="${color}" stop-opacity=".72"/></linearGradient></defs>
-    <rect width="${W}" height="${H}" fill="#111"/><rect width="${W}" height="${H}" fill="url(#${id})"/>
-    ${shapes}<g font-family="ui-serif, Georgia, serif" font-weight="600">${text}</g></svg>`;
+    <rect width="${W}" height="${H}" fill="${color}"/>
+    <g opacity=".55">${shapes}</g>
+    <text x="${left ? 28 : W - 28}" y="${H - 4}" text-anchor="${left ? "start" : "end"}" font-family="Barlow Condensed, Arial Narrow, sans-serif"
+      font-weight="700" font-size="190" letter-spacing="-3" fill="#fff" fill-opacity=".9">${code}</text></svg>`;
 }
 
 const isPictureBanner = (c) => !!c.banner && !c.banner.startsWith("gen:");

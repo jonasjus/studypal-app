@@ -52,16 +52,18 @@ function projectCard(p) {
       `<i class="${i < done ? "on" : ""}"></i>`).join("")}</div>` : `<div class="task-bar empty"><i></i></div>`;
   const tags = p.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(" ");
   return `<div class="card research s-${esc(p.status)}" style="--course:${esc(cc(p.color))}" tabindex="0" data-act="open-research" data-id="${p.id}" data-kind="project">
+    ${p.due_days === null || p.due_days === undefined ? '<div class="tt-when over"><span class="tt-num">–</span></div>'
+      : countdown({ days_left: p.due_days })}
     ${dragHandle()}
     <div class="card-top">
       <span class="kind-label">${ICONS.research} Research</span>
       <span class="card-name">${esc(p.title)}</span>
-      <span class="card-exam"><span class="tag status-tag st-${esc(p.status)}">${esc(p.status_label)}</span>${p.due_words ? ` · ${esc(p.due_words)}` : ""}</span>
+      <span class="card-exam"><span class="tag status-tag st-${esc(p.status)}">${esc(p.status_label)}</span>${p.end_label ? ` <span>Due ${esc(p.end_label)}</span>` : ""}</span>
     </div>
     ${bar}
     <div class="card-words">${p.tasks_total ? `<span>${p.tasks_done}/${p.tasks_total} tasks</span>` : '<span class="muted">No tasks yet</span>'}
       ${p.next_task ? `<span class="muted">Next: ${esc(p.next_task)}</span>` : ""}</div>
-    <div class="card-facts">${esc(p.facts)}${tags ? ` <span class="card-tags">${tags}</span>` : ""}</div>
+    <div class="card-facts">${metaParts(p.facts)}${tags ? ` <span class="card-tags">${tags}</span>` : ""}</div>
     <div class="card-actions">
       <button class="btn small" data-act="start-studying" data-project="${p.id}">${ICONS.play} Work</button>
       <button class="btn small" data-act="log-time" data-project="${p.id}">Log time</button>

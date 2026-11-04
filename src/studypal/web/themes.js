@@ -9,12 +9,12 @@
 const COURSE_COLORS = ["#5b8def", "#e07a5f", "#3ba99c", "#b07fe0", "#d9a930", "#6fae5a", "#e0679a", "#7d8ba3"];
 
 const LIGHT = {
-  bg: "#f5f4f0", surface: "#ffffff", surface2: "#faf9f6", text: "#1d2026", muted: "#6c7079", faint: "#9da1a8",
-  border: "#e5e2db", track: "#ebe8e1", accent: "#4b67e0", warn: "#c98a12", danger: "#cf3f3f", ok: "#2f8f5e",
+  bg: "#e9eae6", surface: "#fafaf8", surface2: "#f0f1ed", text: "#17191c", muted: "#5d6166", faint: "#969a9e",
+  border: "#dcded9", track: "#e3e5e0", accent: "#17191c", warn: "#b06d08", danger: "#c4202f", ok: "#1f7546",
 };
 const DARK = {
-  bg: "#15161a", surface: "#1e1f24", surface2: "#23252b", text: "#e9e7e3", muted: "#a0a3ab", faint: "#6f737c",
-  border: "#2f3138", track: "#2c2e35", accent: "#7d93f5", warn: "#e2ad45", danger: "#ef6f6a", ok: "#5cc28c", dark: true,
+  bg: "#19191b", surface: "#242527", surface2: "#2c2d30", text: "#ecebe6", muted: "#a6a59f", faint: "#706f6b",
+  border: "#3a3b3d", track: "#343537", accent: "#ecebe6", warn: "#e3a43a", danger: "#f0625c", ok: "#62c48c", dark: true,
 };
 
 // ---------- Daylight: colours that follow the time of day ----------
@@ -199,3 +199,26 @@ function themePreview(theme) {
 
 // Daylight moves on by itself: refresh its colours every minute while it's in use.
 setInterval(() => { if (activeTheme.dynamic) applyTheme(activeTheme.name); }, 60000);
+
+// ---------- font and text size ----------
+// Chosen in Settings and kept per computer like the theme. The size scales every piece of text (app.css
+// sets them in rem); the big condensed figures keep their own face.
+
+const FONTS = [
+  ["source", "Source Sans 3", '"Source Sans 3", -apple-system, "Segoe UI", system-ui, sans-serif', "Made for reading on screens"],
+  ["atkinson", "Atkinson Hyperlegible", '"Atkinson Hyperlegible Next", -apple-system, "Segoe UI", sans-serif',
+    "Made for low vision: every letter and digit distinct (zeros are slashed)"],
+  ["system", "System font", '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif', "The computer's own (San Francisco on a Mac)"],
+  ["serif", "Serif", 'Charter, "Iowan Old Style", Georgia, "Times New Roman", serif', "Like a printed book"],
+];
+const TEXT_SIZES = [["small", "Small", 0.92], ["normal", "Normal", 1], ["large", "Large", 1.12], ["larger", "Larger", 1.25]];
+
+let activeType = { font: "source", size: "normal" };
+
+function applyType(type) {
+  const font = FONTS.find(([k]) => k === type.font) || FONTS[0];
+  const size = TEXT_SIZES.find(([k]) => k === type.size) || TEXT_SIZES[1];
+  activeType = { font: font[0], size: size[0] };
+  document.documentElement.style.setProperty("--sans", font[2]);
+  document.documentElement.style.fontSize = `${16 * size[2]}px`;
+}
