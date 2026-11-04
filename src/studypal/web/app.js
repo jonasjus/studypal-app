@@ -100,6 +100,9 @@ function toast(message, isError = false) {
 }
 
 const ICONS = {
+  plus: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  person: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
+  home: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/></svg>',
   edit: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
   trash: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>',
   more: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
@@ -670,6 +673,7 @@ async function refresh() {
   main.scrollTop = scroll;
   restoreFocus(focus);
   afterRender();
+  loadSidebar();
 }
 
 // Redrawing replaces the page, which would throw away the cursor in a field you're typing in (a note saving
@@ -891,9 +895,10 @@ function renderAccount() {
   const a = state.account, el = $("#account");
   if (!a || !a.configured) { el.innerHTML = ""; return; }
   if (!a.signed_in) {
+    const you = `<span class="avatar local">${ICONS.person}</span>`;
     el.innerHTML = a.accounts.length
-      ? `<button class="sync-chip s-local" data-act="account-menu" title="Not using an account. Click to switch."><span class="sync-dot"></span>This computer only</button>`
-      : `<button class="btn ghost" data-act="sign-in">Sign in</button>`;
+      ? `<button class="sync-chip s-local" data-act="account-menu" title="Not using an account. Click to switch.">${you}<span class="chip-email">This computer only</span><span class="sync-dot"></span></button>`
+      : `<button class="sync-chip s-local" data-act="sign-in" title="Sign in">${you}<span class="chip-email">Sign in</span></button>`;
     return;
   }
   const status = state.syncing ? "syncing" : a.sync.status;
@@ -1019,6 +1024,54 @@ async function signOut() {
   toast(r.message);
   await afterAccountChange(r);
   await refresh();
+}
+
+// ---------- sidebar ----------
+
+// Quick access to every active subject and research project. Folds down to a rail of coloured badges;
+// which way it was left is remembered on this computer.
+let sideItems = { courses: [], projects: [] };
+
+function setSidebarCollapsed(collapsed) {
+  document.body.classList.toggle("side-collapsed", collapsed);
+  const b = $(".side-toggle");
+  const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  b.title = label;
+  b.setAttribute("aria-label", label);
+  b.setAttribute("aria-expanded", String(!collapsed));
+  try { localStorage.setItem("studypal.sidebar", collapsed ? "collapsed" : "open"); } catch (e) { /* only a convenience */ }
+}
+
+async function loadSidebar() {
+  try {
+    const [courses, projects] = await Promise.all([call("courses"), call("projects")]);
+    sideItems = { courses: activeSubjects(courses), projects: projects.filter((p) => !p.done) };
+  } catch (e) { /* keep what's shown */ }
+  renderSidebar();
+}
+
+function sideLink({ act, id, color, badge, label, sub, active }) {
+  return `<button class="side-item${active ? " active" : ""}" data-act="${act}" data-id="${id}" title="${esc(label)}"${active ? ' aria-current="page"' : ""}>
+    <span class="side-badge" style="background:${esc(color)}">${esc(badge)}</span>
+    <span class="side-text"><span class="side-label">${esc(label)}</span>${sub ? `<span class="side-sub">${esc(sub)}</span>` : ""}</span></button>`;
+}
+
+function renderSidebar() {
+  const v = state.view, { courses, projects } = sideItems;
+  const courseId = ["subject", "reading", "exams"].includes(v.name) ? v.id : null;
+  const projectId = v.name === "research" ? v.id : null;
+  const head = (title, act, what) => `<div class="side-head"><span>${title}</span>${iconBtn("plus", act, "", `Add ${what}`)}</div>`;
+  $("#side-nav").innerHTML = `
+    <button class="side-item${v.name === "overview" ? " active" : ""}" data-go="overview" title="Overview">
+      <span class="side-badge plain">${ICONS.home}</span><span class="side-text"><span class="side-label">Overview</span></span></button>
+    ${head("Subjects", "add-course", "a subject")}
+    ${courses.length ? courses.map((c) => sideLink({ act: "open-subject", id: c.id, color: cc(c.color), badge: (c.code || c.name).slice(0, 3),
+        label: `${c.code} ${c.name}`.trim(), sub: c.exam_label ? `Exam ${c.exam_label}` : "", active: c.id === courseId })).join("")
+      : `<p class="side-empty">No subjects yet</p>`}
+    ${head("Research", "add-project", "a research project")}
+    ${projects.length ? projects.map((p) => sideLink({ act: "open-research", id: p.id, color: cc(p.color), badge: p.title.slice(0, 1).toUpperCase(),
+        label: p.title, sub: p.due_words, active: p.id === projectId })).join("")
+      : `<p class="side-empty">No research projects yet</p>`}`;
 }
 
 // ---------- the forms ----------
@@ -1441,6 +1494,7 @@ const actions = {
   },
   "drag": () => {},  // the handle's own click does nothing; dragging is handled in `sortable`
   settings: () => settingsForm(),
+  "toggle-sidebar": () => setSidebarCollapsed(!document.body.classList.contains("side-collapsed")),
   "sign-in": () => signInForm(),
   "sign-up": () => signUpForm(),
   "account-menu": (el) => {
@@ -1699,6 +1753,7 @@ async function setTheme(name, save) {
     if (v.name === "overview") renderOverall(state.data.overall);
   }
   renderAccount();
+  renderSidebar();
 }
 
 // Before anything is drawn: the last theme used here, so the window doesn't flash in the wrong colours.
@@ -1707,6 +1762,7 @@ try { applyTheme(localStorage.getItem("studypal.theme") || "system"); } catch (e
 // ---------- start ----------
 
 function start() {
+  try { setSidebarCollapsed(localStorage.getItem("studypal.sidebar") === "collapsed"); } catch (e) { /* open */ }
   // #subject/3 or #reading/3 opens straight onto that page (handy when working on the interface).
   const m = location.hash.match(/^#(subject|reading|exams|research)\/(\d+)$/);
   if (m) state.view = { name: m[1], id: Number(m[2]) };
