@@ -10,7 +10,7 @@ from .logic.merge import LINKS, TABLES, Dataset, empty
 
 # Fields stored for each table (besides uid, updated and links).
 FIELDS: dict[str, list[str]] = {
-    "course": ["name", "code", "cram_start", "exam_date", "color", "notes", "done", "position"],
+    "course": ["name", "code", "cram_start", "exam_date", "color", "notes", "done", "position", "banner"],
     "topic": ["title", "status", "confidence", "last_studied"],
     "source": ["title", "author", "position", "kind", "year", "publisher", "edition", "journal", "volume", "issue",
                "pages", "link"],
@@ -23,6 +23,7 @@ FIELDS: dict[str, list[str]] = {
     "exam_file": ["name", "key", "mime", "size", "role"],
     "exam_question": ["number", "prompt", "answer", "marks", "result", "note", "why", "position", "parent_number",
                       "question_type", "topic_tags", "has_figure"],
+    "exam_attempt": ["started_at", "minutes", "finished_at", "seconds", "items", "summary", "graded"],
     "project": ["title", "description", "status", "tags", "start_on", "end_on", "color", "position", "created_at"],
     "project_note": ["title", "body", "created_at"],
     "project_entry": ["day", "body"],

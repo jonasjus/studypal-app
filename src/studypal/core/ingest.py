@@ -204,6 +204,7 @@ marked separately. For each give:
 - parent_number: the main question a part belongs to ("1" for 1.3, "2" for 2b), or "" for a question without parts.
 - text: the full question, faithfully, in the exam's own language, Markdown with maths in LaTeX ($...$).
   Repeat shared context from the main question in each part, so every part can be read on its own.
+  For multiple choice, include every option, each on its own line as "A. ...", "B. ...", in the printed order.
 - topic_tags: the course topics it tests, copied exactly from the list above (empty if none fits).
 - question_type: one of {", ".join(Q.QUESTION_TYPES)}.
 - points: what this question or part is worth, as a number ("10"), if printed for it. When only the main

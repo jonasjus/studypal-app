@@ -157,7 +157,8 @@ function progressWords(p) {
 
 function subjectCard(c) {
   const close = c.progress.days_left >= 0 && c.progress.days_left <= 2;
-  return `<div class="card" style="--course:${esc(cc(c.color))}" tabindex="0" data-act="open-subject" data-id="${c.id}" data-kind="course">
+  return `<div class="card has-banner" style="--course:${esc(cc(c.color))}" tabindex="0" data-act="open-subject" data-id="${c.id}" data-kind="course">
+    ${courseBanner(c, "card")}
     ${dragHandle()}
     <div class="card-top">
       <span class="code">${esc(c.code)}</span>
@@ -329,6 +330,7 @@ function renderSubject(d) {
   const readingLabel = d.reading.required ? `Reading list · ${d.reading.read}/${d.reading.required}` : "Reading list";
   return `<div class="subject-head" style="--course:${esc(cc(c.color))}">
     <div class="crumbs"><button class="btn small ghost" data-go="overview">${ICONS.back} All subjects</button></div>
+    ${courseBanner(c, "page")}
     <div class="title-line">
       <span class="code">${esc(c.code)}</span><h1>${esc(c.name)}</h1>
       ${c.done ? '<span class="tag">finished</span>' : ""}
@@ -636,12 +638,9 @@ async function refresh() {
   let data;
   await beforeRefresh();
   const focus = keepFocus();
+  const view = VIEWS[v.name] || VIEWS.overview;
   try {
-    if (v.name === "subject") data = await call("subject", v.id);
-    else if (v.name === "research") data = await call("research", v.id);
-    else if (v.name === "reading") data = await call("reading", v.id);
-    else if (v.name === "exams") data = await call("exams", v.id);
-    else data = await call("overview");
+    data = await view.load(v.id);
   } catch (e) {
     if (v.name !== "overview") { state.view = { name: "overview" }; return refresh(); }
     main.innerHTML = `<p class="loading">${esc(e.message)}</p>`;
@@ -653,16 +652,9 @@ async function refresh() {
     state.colors = data.colors;
     state.nextColor = data.next_color;
     renderBanner(data.banner);
-    main.innerHTML = renderOverview(data);
-  } else if (v.name === "subject") {
-    main.innerHTML = renderSubject(data);
-  } else if (v.name === "exams") {
-    main.innerHTML = renderExams(data);
-  } else if (v.name === "research") {
-    main.innerHTML = renderResearch(data);
-  } else {
-    main.innerHTML = renderReading(data);
   }
+  // A page being typed into can ask not to be redrawn under the cursor (taking an exam).
+  if (!(view.keep && view.keep(data))) main.innerHTML = view.render(data);
   renderOverall(v.name === "overview" ? data.overall : null);
   if ("running" in data) {
     state.running = data.running;
@@ -674,6 +666,21 @@ async function refresh() {
   restoreFocus(focus);
   afterRender();
   loadSidebar();
+}
+
+// Each page: how to load its data (given the view's id) and draw it. exams.js adds its own pages.
+const VIEWS = {
+  overview: { load: () => call("overview"), render: (d) => renderOverview(d) },
+  subject: { load: (id) => call("subject", id), render: (d) => renderSubject(d) },
+  reading: { load: (id) => call("reading", id), render: (d) => renderReading(d) },
+  exams: { load: (id) => call("exams", id), render: (d) => renderExams(d) },
+  research: { load: (id) => call("research", id), render: (d) => renderResearch(d) },
+};
+
+function renderView() {
+  const v = state.view;
+  $("#view").innerHTML = (VIEWS[v.name] || VIEWS.overview).render(state.data);
+  if (v.name === "overview") renderOverall(state.data.overall);
 }
 
 // Redrawing replaces the page, which would throw away the cursor in a field you're typing in (a note saving
@@ -1058,7 +1065,8 @@ function sideLink({ act, id, color, badge, label, sub, active }) {
 
 function renderSidebar() {
   const v = state.view, { courses, projects } = sideItems;
-  const courseId = ["subject", "reading", "exams"].includes(v.name) ? v.id : null;
+  const courseId = ["subject", "reading", "exams"].includes(v.name) ? v.id
+    : ["exam", "take", "attempt"].includes(v.name) ? state.data?.course?.id : null;
   const projectId = v.name === "research" ? v.id : null;
   const head = (title, act, what) => `<div class="side-head"><span>${title}</span>${iconBtn("plus", act, "", `Add ${what}`)}</div>`;
   $("#side-nav").innerHTML = `
@@ -1733,8 +1741,11 @@ document.addEventListener("keydown", (e) => {
     else if (modalClose) modalClose();
     else if (state.view.name === "reading" || state.view.name === "exams") go({ name: "subject", id: state.view.id });
     else if (state.view.name === "subject" || state.view.name === "research") go({ name: "overview" });
+    else if (state.view.name === "exam") go({ name: "exams", id: state.data.course.id });
+    else if (state.view.name === "attempt") go({ name: "exam", id: state.data.exam.id });
+    // Taking an exam: Escape does nothing, so it can't be left by accident.
   }
-  if (e.key === "Enter" && e.target.classList?.contains("card")) actions[e.target.dataset.act](e.target);
+  if (e.key === "Enter" && e.target.matches?.(".card, .exam-card")) actions[e.target.dataset.act](e.target);
 });
 
 // ---------- themes ----------
@@ -1746,12 +1757,7 @@ async function setTheme(name, save) {
   if (save) {
     try { await call("set_theme", name, resolvedTheme().bg); } catch (e) { toast(e.message, true); }
   }
-  if (state.data) {
-    const v = state.view;
-    $("#view").innerHTML = v.name === "subject" ? renderSubject(state.data)
-      : v.name === "reading" ? renderReading(state.data) : v.name === "exams" ? renderExams(state.data) : renderOverview(state.data);
-    if (v.name === "overview") renderOverall(state.data.overall);
-  }
+  if (state.data) renderView();
   renderAccount();
   renderSidebar();
 }
@@ -1764,7 +1770,7 @@ try { applyTheme(localStorage.getItem("studypal.theme") || "system"); } catch (e
 function start() {
   try { setSidebarCollapsed(localStorage.getItem("studypal.sidebar") === "collapsed"); } catch (e) { /* open */ }
   // #subject/3 or #reading/3 opens straight onto that page (handy when working on the interface).
-  const m = location.hash.match(/^#(subject|reading|exams|research)\/(\d+)$/);
+  const m = location.hash.match(/^#(subject|reading|exams|research|exam|take|attempt)\/(\d+)$/);
   if (m) state.view = { name: m[1], id: Number(m[2]) };
   call("get_theme").then((name) => {
     if (name !== activeTheme.name) setTheme(name, false);

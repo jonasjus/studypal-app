@@ -14,6 +14,7 @@ import pytest
 import studypal.api as api_module
 from studypal.api import Api
 from studypal.core import files, llm
+from studypal.core.logic import attempts as A
 from studypal.core.logic import exams as L
 from studypal.core.logic import questions as Q
 from studypal.core.models import ExamQuestion, Priority, Topic, WeakSpot
@@ -46,7 +47,7 @@ class FakeModel:
 
     def ask(self, parts, schema, system="", temperature=None, vision=False, effort="medium"):
         kind = {id(Q.QUESTIONS_SCHEMA): "questions", id(Q.SOLUTIONS_SCHEMA): "solutions", id(Q.TRANSCRIBE_SCHEMA): "transcribe",
-                id(Q.MARKS_SCHEMA): "marks", id(Q.GENERATE_SCHEMA): "generate"}[id(schema)]
+                id(Q.MARKS_SCHEMA): "marks", id(Q.GENERATE_SCHEMA): "generate", id(A.GRADE_SCHEMA): "grade"}[id(schema)]
         FakeModel.sent.append((kind, parts, vision))
         FakeModel.progress.append(dict(FakeModel.api._jobs) if FakeModel.api else {})
         queue = FakeModel.replies.get(kind) or [{}]

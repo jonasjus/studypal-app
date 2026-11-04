@@ -177,6 +177,7 @@ Give:
 - questions, each with:
   - number ("1", "2a"), parent_number ("2" for 2a, else "").
   - text: the question, complete and self-contained, Markdown with maths in LaTeX ($...$).
+    For multiple_choice, list every option on its own line as "A. ...", "B. ...".
   - topic_tags: the topics it tests, copied exactly from the list above.
   - question_type: one of short_answer, calculation, proof, multiple_choice, true_false, essay, code, other.
   - points: what it's worth ("10"), or "" if the past exams don't show points.

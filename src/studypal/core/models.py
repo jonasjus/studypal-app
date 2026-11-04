@@ -63,6 +63,7 @@ class Course:
     notes: str = ""
     done: bool = False  # finished with: moved out of the way, its deadlines and weak spots go quiet
     position: int = 0  # place in the overview's list, shared with research projects; 0 = not placed yet
+    banner: str = ""  # "" or "gen:<n>": a pattern made from the course; else the key of your own picture (core/files.py)
     id: int | None = None
 
 
@@ -222,6 +223,24 @@ class ExamQuestion:
     question_type: str = ""  # one of logic/questions.QUESTION_TYPES, "" if not known
     topic_tags: list[str] = field(default_factory=list)
     has_figure: bool = False
+
+
+@dataclass
+class ExamAttempt:
+    """Taking an exam: the questions as they were when it started (so reading the exam again later doesn't
+    change an old attempt), what you wrote, how long it took and how each answer was graded."""
+
+    exam_id: int
+    started_at: datetime
+    minutes: int = 0  # the time allowed; 0 for no limit
+    finished_at: datetime | None = None  # None while it's being taken
+    seconds: int = 0  # how long it took, once handed in
+    # One per question: number, prompt, marks, solution, has_figure, answer (yours), and once graded
+    # verdict (ok/partial/missed), points and feedback. See logic/attempts.py.
+    items: list[dict] = field(default_factory=list)
+    summary: str = ""  # the grader's overall comment
+    graded: str = ""  # "model" or "self" once graded, "" until then
+    id: int | None = None
 
 
 PROJECT_STATUSES = ("idea", "active", "paused", "done")

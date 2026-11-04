@@ -393,6 +393,7 @@ def sync_files(store: Store, client: Client, session: Session, folder: Path, kno
     with (locked() if locked else _nothing()):
         wanted = store.file_keys()
         mimes = dict(store.conn.execute("select key, mime from exam_file").fetchall())
+        mimes.update({k: files.TYPES.get(Path(k).suffix, "application/octet-stream") for k in wanted - set(mimes)})
     try:
         known = set(json.loads(known_path.read_text(encoding="utf-8")))
     except (OSError, ValueError, TypeError):

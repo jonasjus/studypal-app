@@ -86,7 +86,8 @@ deletes its files first, since the database can't remove them itself.
 
 ## Exams
 
-Each subject has an **Exams** page (button on the subject page).
+Each subject has an **Exams** page (button on the subject page), listing its past and practice exams.
+Click an exam to open its own page, with its files, its questions and the times you've taken it.
 
 - **Past exams.** Add the exam paper (PDF or photos). If you have them, also add the solutions and
   your own answers, graded if possible. Click a file to open it in Preview.
@@ -113,6 +114,15 @@ Each subject has an **Exams** page (button on the subject page).
   them. Each question says what it practises. Solutions are folded away until you open them. You mark
   practice questions the same way, so they feed into the next practice exam. **Print…** saves the
   exam as a web page, with the solutions on a separate page, and opens it in the browser.
+- **Taking an exam.** **Take exam** starts an attempt, timed (the limit suggested is about 12 minutes a
+  question) or not. The clock runs from the start, also while the page is closed, and the exam is handed
+  in by itself when time is up. Answers are saved as you type. On handing in, the model grades each answer
+  against the solution (`core/grade.py`, `core/logic/attempts.py`): points out of what the question is
+  worth (its marks if every question has them, else 1 each), a verdict and feedback, plus a summary.
+  Without a model, or to overrule it, you mark each answer **Right**, **Partly** or **Wrong**. The
+  verdicts become how the exam's questions went (the latest attempt counts), so they feed into **What to
+  practise** and the next practice exam. Each attempt keeps a copy of the questions as they were, so
+  reading the exam again later doesn't change it, and attempts sync like everything else.
 
 The model is chosen in Settings (the gear icon), and every provider is reached through the same
 OpenAI-compatible chat API (`core/llm.py`):

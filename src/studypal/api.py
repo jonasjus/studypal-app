@@ -31,11 +31,13 @@ from .core import alerts, cloud, files, notifier, sound
 from .core.files import FileError
 from .core import ingest
 from .core.generate import generate_exam
+from .core.grade import grade as grade_answers
 from .core.llm import PROVIDERS, LLMError, provider_from
 from .core.llm import chosen as llm_chosen
 from .core.logic import questions as question_logic
 from .core.pages import PageError
 from .core.logic import exams as exam_logic
+from .core.logic import attempts as attempt_logic
 from .core.cloud import Accounts, Client, CloudError, Offline, SignedOut
 from .core.config import DEFAULT_THRESHOLDS, Config
 from .core.dashboard import CourseSummary, build
@@ -54,6 +56,7 @@ from .core.models import (
     Deadline,
     DeadlineKind,
     Exam,
+    ExamAttempt,
     ExamFile,
     ExamQuestion,
     FILE_ROLES,
@@ -267,6 +270,7 @@ def _exam_words(course: Course, p: CramProgress) -> str:
 
 def _course(c: Course) -> dict:
     return {"id": c.id, "name": c.name, "code": c.code, "color": c.color, "notes": c.notes, "done": c.done,
+            "banner": c.banner,
             "cram_start": _iso(c.cram_start), "exam_date": _iso(c.exam_date),
             "cram_start_label": _day(c.cram_start), "exam_label": _day(c.exam_date)}
 
@@ -982,6 +986,58 @@ class Api:
     def set_course_done(self, course_id: int, done: bool) -> None:
         self._store.set_course_done(course_id, bool(done))
 
+    # ---------- course banners ----------
+
+    @action
+    def choose_banner_image(self) -> dict:
+        """The system's open dialog for a banner picture. In a plain browser the page uses its own picker."""
+        import webview
+
+        if self._window is None:
+            return {"ok": True, "browser": True, "path": ""}
+        chosen = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
+                                                 file_types=("Pictures (*.jpg;*.jpeg;*.png;*.webp;*.heic;*.heif)",))
+        return {"ok": True, "path": str(chosen[0]) if chosen else ""}
+
+    @action
+    def set_course_banner(self, course_id: int, data: dict) -> dict:
+        """data: {path} (from the dialog) or {name, data as base64} for your own picture, {generated: n} for
+        the pattern made from the course (n picks another one), or {} to go back to the first pattern."""
+        if self._store.get_course(course_id) is None:
+            raise UserError("That subject no longer exists.")
+        data = data or {}
+        if data.get("path") or data.get("data"):
+            if data.get("path"):
+                path = Path(str(data["path"]))
+                if not path.is_file():
+                    raise UserError(f"Can't find “{path.name}” any more.")
+                name, raw = path.name, path.read_bytes()
+            else:
+                name, raw = _text(data, "name") or "banner.jpg", base64.b64decode(str(data.get("data") or ""))
+            mime = files.check(name, len(raw))
+            if not mime.startswith("image/"):
+                raise UserError("Pick a picture (JPG, PNG, WebP or HEIC) for the banner.")
+            from .core.pages import image_page
+
+            key, _ = files.store(self._files_dir(), "banner.jpg", image_page(name, mime, raw))
+            self._store.set_course_banner(course_id, key)
+            return {"ok": True}
+        n = _int(data, "generated") or 0
+        self._store.set_course_banner(course_id, f"gen:{n}" if n else "")
+        return {"ok": True}
+
+    @action
+    def banner_image(self, key: str) -> dict:
+        """A banner picture as a data URL, or "" if it hasn't arrived on this computer yet."""
+        try:
+            path = files.path(self._files_dir(), str(key))
+        except FileError:
+            return {"ok": True, "url": ""}
+        if not path.exists():
+            return {"ok": True, "url": ""}
+        mime = files.TYPES.get(path.suffix.lower(), "image/jpeg")
+        return {"ok": True, "url": f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode()}"}
+
     # ---------- topics ----------
 
     @action
@@ -1323,7 +1379,36 @@ class Api:
                            "tags": [t for t in q.topic_tags if t != topics.get(q.topic_id)],
                            "has_figure": q.has_figure} for q in questions],
             "counts": {**counts, "unmarked": len(questions) - sum(counts.values()), "total": len(questions)},
+            "attempts": self._attempts_brief(exam.id),  # type: ignore[arg-type]
         }
+
+    def _attempts_brief(self, exam_id: int) -> dict:
+        """For the exam's card: how many times it's been taken, the latest and best score, and one being taken."""
+        attempts = self._store.list_attempts(exam_id)
+        done = [a for a in attempts if a.finished_at]
+        scores = [p for p in (attempt_logic.score(a)["percent"] for a in done) if p is not None]
+        latest = next((attempt_logic.score(a)["percent"] for a in done), None)
+        open_ = next((a.id for a in attempts if not a.finished_at), None)
+        return {"count": len(done), "latest": latest, "best": max(scores) if scores else None, "open": open_}
+
+    def _attempt_json(self, a: ExamAttempt, now: datetime, full: bool = False) -> dict:
+        left = attempt_logic.seconds_left(a, now)
+        used = a.seconds if a.finished_at else attempt_logic.elapsed(a, now)
+        out = {"id": a.id, "exam_id": a.exam_id, "started_label": _when(a.started_at), "minutes": a.minutes,
+               "finished": a.finished_at is not None, "seconds_left": None if a.finished_at else left,
+               "elapsed": used, "time_label": attempt_logic.format_seconds(used), "graded": a.graded,
+               "score": attempt_logic.score(a), "answered": sum(1 for i in a.items if (i.get("answer") or "").strip()),
+               "questions": len(a.items)}
+        if full:
+            worth = attempt_logic.max_points(a.items)
+            out["summary"] = a.summary
+            out["items"] = [{**i, "worth": worth[n], "index": n} for n, i in enumerate(a.items)]
+            if any(not i.get("question_type") for i in a.items):
+                # Attempts started before items carried the question type: take it from the exam's questions.
+                types = {q.number: q.question_type for q in self._store.list_questions(a.exam_id)}
+                for i in out["items"]:
+                    i["question_type"] = i.get("question_type") or types.get(i.get("number"), "") or ""
+        return out
 
     def _marked_questions(self, course_id: int, store: Store | None = None) -> list[tuple[str, ExamQuestion]]:
         store = store or self._store
@@ -1503,6 +1588,159 @@ class Api:
             return provider_from(self._prefs())
         except LLMError as e:
             raise UserError(str(e)) from None
+
+    # ---------- taking an exam ----------
+
+    @action
+    def exam(self, exam_id: int) -> dict:
+        """One exam's own page: its questions and files, and the times it's been taken."""
+        exam = self._store.get_exam(exam_id)
+        course = self._store.get_course(exam.course_id) if exam else None
+        if exam is None or course is None:
+            raise UserError("That exam no longer exists.")
+        topic_list = self._store.list_topics(course.id)  # type: ignore[arg-type]
+        topics = {t.id: t.title for t in topic_list}
+        now = datetime.now()
+        n = len(self._store.list_questions(exam_id))
+        return {
+            "course": _course(course),
+            "topics": [{"id": i, "title": t} for i, t in topics.items()],
+            "exam": self._exam_json(exam, topics),  # type: ignore[arg-type]
+            "attempt_list": [self._attempt_json(a, now) for a in self._store.list_attempts(exam_id)],
+            "suggested_minutes": attempt_logic.suggested_minutes(n),
+            "ai": self._ai_ready(),
+        }
+
+    @action
+    def start_attempt(self, data: dict) -> dict:
+        """Start taking an exam (data: exam_id, minutes; 0 for no limit). If it's already being taken, that
+        attempt carries on instead."""
+        exam_id = _int(data, "exam_id")
+        exam = self._store.get_exam(exam_id) if exam_id else None  # type: ignore[arg-type]
+        if exam is None:
+            raise UserError("That exam no longer exists.")
+        going = next((a for a in self._store.list_attempts(exam_id) if not a.finished_at), None)  # type: ignore[arg-type]
+        if going:
+            return {"ok": True, "id": going.id}
+        items = attempt_logic.items_from(self._store.list_questions(exam_id))  # type: ignore[arg-type]
+        if not items:
+            raise UserError("This exam has no questions yet. Read them from the exam paper or add them first.")
+        minutes = _int(data, "minutes") or 0
+        if not 0 <= minutes <= 600:
+            raise UserError("The time limit should be between 1 minute and 10 hours.")
+        a = self._store.add_attempt(ExamAttempt(exam_id=exam_id, started_at=datetime.now().replace(microsecond=0),  # type: ignore[arg-type]
+                                                minutes=minutes, items=items))
+        return {"ok": True, "id": a.id}
+
+    def _get_attempt(self, attempt_id: int) -> tuple[ExamAttempt, Exam, Course]:
+        a = self._store.get_attempt(attempt_id)
+        exam = self._store.get_exam(a.exam_id) if a else None
+        course = self._store.get_course(exam.course_id) if exam else None
+        if a is None or exam is None or course is None:
+            raise UserError("That attempt no longer exists.")
+        return a, exam, course
+
+    @action
+    def attempt(self, attempt_id: int) -> dict:
+        a, exam, course = self._get_attempt(attempt_id)
+        folder = self._files_dir()
+        return {
+            "course": _course(course),
+            "exam": {"id": exam.id, "title": exam.title, "kind": exam.kind,
+                     "files": [{"id": f.id, "name": f.name, "role": f.role, "available": (folder / f.key).exists()}
+                               for f in self._store.list_exam_files(exam.id) if f.role == "exam"]},  # type: ignore[arg-type]
+            "attempt": self._attempt_json(a, datetime.now(), full=True),
+            "ai": self._ai_ready(),
+        }
+
+    @staticmethod
+    def _put_answers(a: ExamAttempt, answers: dict) -> None:
+        for key, text in (answers or {}).items():
+            try:
+                i = int(key)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < len(a.items):
+                a.items[i]["answer"] = str(text or "")[:20000]
+
+    @action
+    def save_answers(self, attempt_id: int, answers: dict) -> None:
+        """Keep what's been written so far ({question index: text}), while the exam is being taken."""
+        a, _, _ = self._get_attempt(attempt_id)
+        if a.finished_at:
+            return
+        self._put_answers(a, answers)
+        self._store.update_attempt(a)
+
+    @action
+    def hand_in(self, attempt_id: int, answers: dict) -> dict:
+        """Finish taking the exam. The time taken stops at the limit, even if the window was closed past it."""
+        a, _, _ = self._get_attempt(attempt_id)
+        if a.finished_at:
+            return {"ok": True, "grade": False}
+        self._put_answers(a, answers)
+        now = datetime.now().replace(microsecond=0)
+        used = attempt_logic.elapsed(a, now)
+        a.seconds = min(used, a.minutes * 60) if a.minutes else used
+        a.finished_at = now
+        self._store.update_attempt(a)
+        return {"ok": True, "grade": self._ai_ready()}
+
+    def _apply_attempt(self, store: Store, a: ExamAttempt) -> None:
+        """How each answer went becomes how the exam's question went (the latest attempt counts), so practice
+        exams aim at it. The grader's feedback becomes the question's note if it has none of its own."""
+        by_number = {question_logic.number_key(q.number): q for q in store.list_questions(a.exam_id)}
+        for item in a.items:
+            q = by_number.get(question_logic.number_key(item.get("number", "")))
+            verdict = item.get("verdict") or ""
+            if q is None or not verdict:
+                continue
+            note = q.note
+            if not note and verdict != "ok" and item.get("feedback"):
+                note = str(item["feedback"])[:500]
+            if q.result != verdict or note != q.note:
+                store.update_question(replace(q, result=verdict, note=note))
+
+    def grade_attempt(self, attempt_id: int) -> dict:
+        """Have the model grade a handed-in attempt (core/grade.py). Runs in the background like reading an exam."""
+        job = f"grade:{attempt_id}"
+
+        def work() -> dict:
+            with self._lock:
+                store = self._store
+                a, exam, course = self._get_attempt(attempt_id)
+                if not a.finished_at:
+                    raise UserError("Hand the exam in first.")
+            provider = self._llm()
+
+            def progress(text: str) -> None:
+                self._jobs[job] = text
+
+            grade_answers(provider, f"{course.code} {course.name}", exam.title, a, progress)
+            with self._lock:
+                if self._store is not store or store.get_attempt(attempt_id) is None:
+                    raise UserError("The attempt changed while it was being graded. Try again.")
+                store.update_attempt(a)
+                self._apply_attempt(store, a)
+            sc = attempt_logic.score(a)
+            percent = f" ({sc['percent']}%)" if sc["percent"] is not None else ""
+            return {"ok": True, "message": f"{exam.title}: graded, {sc['got']:g} of {sc['max']:g} points{percent}."}
+        return self._ai_call(job, work)
+
+    @action
+    def set_attempt_verdict(self, attempt_id: int, index: int, verdict: str) -> None:
+        """Mark one answer by hand (or change the model's mark)."""
+        a, _, _ = self._get_attempt(attempt_id)
+        try:
+            attempt_logic.set_verdict(a, int(index), str(verdict or ""))
+        except ValueError as e:
+            raise UserError(str(e)) from None
+        self._store.update_attempt(a)
+        self._apply_attempt(self._store, a)
+
+    @action
+    def delete_attempt(self, attempt_id: int) -> None:
+        self._store.delete_attempt(attempt_id)
 
     @action
     def ai_settings(self) -> dict:

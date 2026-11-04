@@ -24,6 +24,7 @@ from .models import (
     Deadline,
     DeadlineKind,
     Exam,
+    ExamAttempt,
     ExamFile,
     ExamQuestion,
     LINK_CATEGORIES,
@@ -553,6 +554,25 @@ MIGRATIONS: list[str] = [
     alter table exam_question add column topic_tags text default '[]';
     alter table exam_question add column has_figure integer default 0;
     """,
+    # StudyPal only: taking an exam, timed, and how it was graded. items is a JSON list (models.ExamAttempt).
+    """
+    create table exam_attempt (
+        id           integer primary key,
+        exam_id      integer not null references exam(id) on delete cascade,
+        started_at   text not null,
+        minutes      integer not null default 0,
+        finished_at  text,
+        seconds      integer not null default 0,
+        items        text not null default '[]',
+        summary      text default '',
+        graded       text default ''
+    );
+    create index exam_attempt_exam on exam_attempt(exam_id);
+    """ + _sync_columns("exam_attempt"),
+    # StudyPal only: each course's banner ("" for the one made from the course, else a picture's file key).
+    """
+    alter table course add column banner text default '';
+    """,
 ]
 
 
@@ -594,6 +614,11 @@ def _d(value: str | None) -> date | None:
 
 def _dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
+
+
+def _iso_s(value: datetime | None) -> str | None:
+    """To the second, for the clock of an exam being taken."""
+    return value.replace(microsecond=0).isoformat(timespec="seconds") if value else None
 
 
 def _iso(value: date | datetime | None) -> str | None:
@@ -665,7 +690,7 @@ class Store:
         return Course(
             id=r["id"], name=r["name"], code=r["code"], cram_start=_d(r["cram_start"]),
             exam_date=_d(r["exam_date"]), color=r["color"], notes=r["notes"], done=bool(r["done"]),
-            position=r["position"] or 0,
+            position=r["position"] or 0, banner=r["banner"] or "",
         )
 
     def next_color(self) -> str:
@@ -1607,8 +1632,14 @@ class Store:
         return [self._exam_file(r) for r in rows]
 
     def file_keys(self) -> set[str]:
-        """Every file any exam uses, for keeping the files folder (and the cloud's copy) tidy."""
-        return {r[0] for r in self.conn.execute("select distinct key from exam_file")}
+        """Every file any exam or course banner uses, for keeping the files folder (and the cloud's copy) tidy."""
+        return ({r[0] for r in self.conn.execute("select distinct key from exam_file")}
+                | {r[0] for r in self.conn.execute("select banner from course where banner like '%.%'")})
+
+    def set_course_banner(self, course_id: int, banner: str) -> None:
+        with self._tx() as c:
+            if c.execute("update course set banner = ? where id = ?", (banner, course_id)).rowcount == 0:
+                raise StorageError("That course no longer exists.")
 
     def add_question(self, q: ExamQuestion) -> ExamQuestion:
         with self._tx() as c:
@@ -1658,6 +1689,49 @@ class Store:
     def list_questions(self, exam_id: int) -> list[ExamQuestion]:
         rows = self.conn.execute("select * from exam_question where exam_id = ? order by position, id", (exam_id,))
         return [self._question(r) for r in rows]
+
+    # ---------- taking exams ----------
+
+    @staticmethod
+    def _attempt(r: sqlite3.Row) -> ExamAttempt:
+        try:
+            items = [i for i in json.loads(r["items"] or "[]") if isinstance(i, dict)]
+        except (ValueError, TypeError):
+            items = []
+        return ExamAttempt(id=r["id"], exam_id=r["exam_id"], started_at=_dt(r["started_at"]) or datetime.now(),
+                           minutes=r["minutes"] or 0, finished_at=_dt(r["finished_at"]), seconds=r["seconds"] or 0,
+                           items=items, summary=r["summary"] or "", graded=r["graded"] or "")
+
+    def add_attempt(self, a: ExamAttempt) -> ExamAttempt:
+        with self._tx() as c:
+            cur = c.execute("insert into exam_attempt (exam_id, started_at, minutes, finished_at, seconds, items,"
+                            " summary, graded) values (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (a.exam_id, _iso_s(a.started_at), a.minutes, _iso_s(a.finished_at), a.seconds,
+                             json.dumps(a.items, ensure_ascii=False), a.summary, a.graded))
+            a.id = cur.lastrowid
+        return a
+
+    def update_attempt(self, a: ExamAttempt) -> ExamAttempt:
+        with self._tx() as c:
+            c.execute("update exam_attempt set minutes = ?, finished_at = ?, seconds = ?, items = ?, summary = ?,"
+                      " graded = ? where id = ?",
+                      (a.minutes, _iso_s(a.finished_at), a.seconds, json.dumps(a.items, ensure_ascii=False), a.summary,
+                       a.graded, a.id))
+        return a
+
+    def get_attempt(self, attempt_id: int) -> ExamAttempt | None:
+        r = self.conn.execute("select * from exam_attempt where id = ?", (attempt_id,)).fetchone()
+        return self._attempt(r) if r else None
+
+    def list_attempts(self, exam_id: int) -> list[ExamAttempt]:
+        """Newest first."""
+        rows = self.conn.execute("select * from exam_attempt where exam_id = ? order by started_at desc, id desc",
+                                 (exam_id,))
+        return [self._attempt(r) for r in rows]
+
+    def delete_attempt(self, attempt_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from exam_attempt where id = ?", (attempt_id,))
 
     # ---------- research projects ----------
 
