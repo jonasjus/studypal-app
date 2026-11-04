@@ -24,7 +24,7 @@
   --ok: #1f7546;
   --ok-soft: #e0efe5;
   --shadow: none;
-  --radius: 3px;
+  --radius: 6px;  /* buttons, fields and rows */
   --sheet-radius: 8px;
   --sans: "Source Sans 3", -apple-system, "Segoe UI", system-ui, sans-serif;
   --figures: "Barlow Condensed", "Arial Narrow", sans-serif;
@@ -104,7 +104,9 @@ h3 { font-weight: 600; }
   padding: 10px 12px 14px; background: var(--bg);
   transition: width .15s ease;
 }
-.side-toggle { align-self: flex-end; flex: none; }
+.side-toggle { flex: none; }
+.side-top { display: flex; align-items: center; gap: 4px; }
+.side-top .side-item { flex: 1; min-width: 0; }
 #side-nav { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 2px; }
 .side-head {
   display: flex; align-items: center; justify-content: space-between; gap: 6px;
@@ -135,6 +137,7 @@ h3 { font-weight: 600; }
 .side-foot .chip-status { display: none; }
 
 body.side-collapsed #sidebar { width: 60px; padding-left: 8px; padding-right: 8px; }
+body.side-collapsed .side-top { flex-direction: column-reverse; align-items: stretch; }
 body.side-collapsed .side-toggle { align-self: center; }
 body.side-collapsed .side-text,
 body.side-collapsed .side-head > span,
@@ -230,6 +233,8 @@ main { flex: 1; overflow-y: auto; padding: 20px 28px 40px; outline: none; }
   box-shadow: none; padding: 18px 22px 18px 14px; cursor: pointer;
 }
 .card:hover { background: color-mix(in srgb, var(--surface) 70%, var(--surface-2)); }
+/* The course's colour as a bar down the left edge, as in the previous look. */
+.card::before { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 4px; border-radius: 0 4px 4px 0; background: var(--course); }
 .card > :not(.tt-when):not(.drag-handle) { grid-column: 2; }
 .tt-when { grid-column: 1; grid-row: 1 / span 6; display: flex; flex-direction: column; align-items: flex-end; padding-top: 2px; }
 .tt-num { font: 700 2.875rem/.9 var(--figures); letter-spacing: -.01em; }
@@ -343,7 +348,7 @@ details.done-pane .card .course-banner { filter: grayscale(.6); }
 
 .topic-row .status {
   appearance: none; -webkit-appearance: none;
-  border: 1px solid var(--border); border-radius: 2px; padding: 2px 22px 2px 8px; font: inherit; font-size: 0.8125rem; font-weight: 600;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 22px 2px 8px; font: inherit; font-size: 0.8125rem; font-weight: 600;
   background: var(--surface-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 8px center;
   color: var(--muted); cursor: pointer; min-width: 112px;
 }
@@ -475,7 +480,7 @@ details.done-pane .card { opacity: .7; }
 /* ---------- account ---------- */
 .sync-chip {
   display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px;
-  border: 1px solid var(--border); border-radius: 2px; background: var(--surface); cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); cursor: pointer;
   color: var(--muted); font-size: 0.8125rem; white-space: nowrap;
 }
 .sync-chip:hover { border-color: var(--faint); color: var(--text); }
@@ -638,7 +643,7 @@ body:has(#overall:not([hidden])) #toasts { bottom: 64px; }
 .job-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .job-card .job { color: var(--text); font-weight: 550; }
 .jobs-pill {
-  display: inline-flex; align-items: center; gap: 8px; max-width: 280px; padding: 5px 12px; border-radius: 2px;
+  display: inline-flex; align-items: center; gap: 8px; max-width: 280px; padding: 5px 12px; border-radius: var(--radius);
   border: 1px solid var(--border); background: var(--accent-soft); color: var(--accent); font: inherit; font-size: 0.8125rem;
   font-weight: 550; cursor: pointer;
 }
@@ -664,6 +669,7 @@ body:has(#overall:not([hidden])) #toasts { bottom: 64px; }
 
 /* ---------- research card ---------- */
 .card.research { background: var(--surface); }
+.card.research::before { background: repeating-linear-gradient(180deg, var(--course) 0 6px, transparent 6px 9px); }
 .card.research.s-paused, .card.research.s-idea { opacity: .85; }
 .kind-label {
   display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 1px 8px 1px 6px; border-radius: 2px;
@@ -685,7 +691,7 @@ body:has(#overall:not([hidden])) #toasts { bottom: 64px; }
 .research-head .title-line h1 { overflow-wrap: anywhere; }
 .status-pick {
   appearance: none; -webkit-appearance: none; font: inherit; font-size: 0.75rem; font-weight: 600; cursor: pointer;
-  border: 1px solid var(--border); border-radius: 2px; padding: 3px 24px 3px 10px; color: var(--muted);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 3px 24px 3px 10px; color: var(--muted);
   background: var(--surface-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 9px center;
 }
 .status-pick.st-active, .status-pick.rs-read { background-color: var(--ok-soft); color: var(--ok); border-color: transparent; }
@@ -831,7 +837,7 @@ body:has(#overall:not([hidden])) #toasts { bottom: 64px; }
 .take-choice:focus-visible { outline: 2px solid var(--course, var(--accent)); outline-offset: 1px; }
 .take-choice.on { border-color: var(--text); background: var(--surface); box-shadow: inset 0 0 0 1px var(--text); }
 .take-choice .opt-key {
-  flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 2px;
+  flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px;
   border: 1px solid var(--border); font-size: 0.75rem; font-weight: 700; color: var(--muted);
 }
 .take-choice.on .opt-key { background: var(--text); border-color: transparent; color: var(--bg); }

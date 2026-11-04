@@ -1055,7 +1055,7 @@ let sideItems = { courses: [], projects: [] };
 
 function setSidebarCollapsed(collapsed) {
   document.body.classList.toggle("side-collapsed", collapsed);
-  const b = $(".side-toggle");
+  const b = sideToggle;
   const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
   b.title = label;
   b.setAttribute("aria-label", label);
@@ -1077,6 +1077,8 @@ function sideLink({ act, id, color, badge, label, sub, active }) {
     <span class="side-text"><span class="side-label">${esc(label)}</span>${sub ? `<span class="side-sub">${esc(sub)}</span>` : ""}</span></button>`;
 }
 
+const sideToggle = $(".side-toggle");  // kept here, as redrawing the nav would otherwise throw it away
+
 function renderSidebar() {
   const v = state.view, { courses, projects } = sideItems;
   const courseId = ["subject", "reading", "exams"].includes(v.name) ? v.id
@@ -1084,8 +1086,8 @@ function renderSidebar() {
   const projectId = v.name === "research" ? v.id : null;
   const head = (title, act, what) => `<div class="side-head"><span>${title}</span>${iconBtn("plus", act, "", `Add ${what}`)}</div>`;
   $("#side-nav").innerHTML = `
-    <button class="side-item${v.name === "overview" ? " active" : ""}" data-go="overview" title="Overview">
-      <span class="side-badge plain">${ICONS.home}</span><span class="side-text"><span class="side-label">Overview</span></span></button>
+    <div class="side-top"><button class="side-item${v.name === "overview" ? " active" : ""}" data-go="overview" title="Overview">
+      <span class="side-badge plain">${ICONS.home}</span><span class="side-text"><span class="side-label">Overview</span></span></button></div>
     ${head("Subjects", "add-course", "a subject")}
     ${courses.length ? courses.map((c) => sideLink({ act: "open-subject", id: c.id, color: cc(c.color), badge: (c.code || c.name).slice(0, 3),
         label: `${c.code} ${c.name}`.trim(), sub: c.exam_label ? `Exam ${c.exam_label}` : "", active: c.id === courseId })).join("")
@@ -1094,6 +1096,7 @@ function renderSidebar() {
     ${projects.length ? projects.map((p) => sideLink({ act: "open-research", id: p.id, color: cc(p.color), badge: p.title.slice(0, 1).toUpperCase(),
         label: p.title, sub: p.due_words, active: p.id === projectId })).join("")
       : `<p class="side-empty">No research projects yet</p>`}`;
+  $(".side-top").append(sideToggle);  // the one collapse button, kept beside Overview to save a row
 }
 
 // ---------- the forms ----------
