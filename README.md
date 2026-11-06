@@ -52,7 +52,8 @@ download it. Each zip is kept for 30 days.
 
 ### iPhone
 
-The iPhone version is a web app with the same features as the desktop app. Open it in Safari, tap
+The iPhone version is a web app with the same features as the desktop app. Open
+[jonasjus.github.io/studypal](https://jonasjus.github.io/studypal/) in Safari, tap
 **Share → Add to Home Screen**, and it opens like an app from then on. The first start downloads
 Python (about 15 MB), so it takes a little while. After that it works offline too.
 
@@ -98,7 +99,8 @@ and try it:
 python3 -m http.server 8811 -d dist/web          # then open http://localhost:8811/?demo
 ```
 
-`.github/workflows/iphone.yml` publishes it on GitHub Pages.
+`sh mobile/publish.sh` builds it and publishes it on the personal site, https://jonasjus.github.io/studypal/
+(the `jonasjus.github.io` repository).
 
 ## License
 
