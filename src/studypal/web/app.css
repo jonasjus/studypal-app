@@ -904,12 +904,14 @@ body:has(#overall:not([hidden])) #toasts { bottom: 64px; }
 
   /* Topics: the name on its own line, then the status, reading and confidence, with the buttons. */
   .topic-row { flex-wrap: wrap; row-gap: 6px; padding-top: 10px; padding-bottom: 10px; }
-  .topic-row .grow { order: -2; flex: 1 1 calc(100% - 110px); }
+  .topic-row .grow { order: -2; flex: 1 1 calc(100% - 150px); }
+  .topic-row .status { min-width: 104px; }
+  .topic-row { column-gap: 8px; }
   .topic-row .title { white-space: normal; }
   .topic-row .row-actions { order: -1; visibility: visible; align-self: flex-start; }
   .tl-labels .mid { display: none; }
-  .conf { gap: 6px; }
-  .conf button { width: 20px; height: 20px; }
+  .conf { gap: 5px; }
+  .conf button { width: 18px; height: 18px; }
   .meta { column-gap: 10px; }
 
   .section-head, .title-line { flex-wrap: wrap; }
