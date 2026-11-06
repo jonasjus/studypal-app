@@ -34,6 +34,7 @@ from .models import (
     Project,
     ProjectEntry,
     ProjectLink,
+    CourseNote,
     ProjectNote,
     ProjectSource,
     ProjectTask,
@@ -573,6 +574,18 @@ MIGRATIONS: list[str] = [
     """
     alter table course add column banner text default '';
     """,
+    # StudyPal only: notes for a subject, like a research project's, each optionally about one of its topics.
+    """
+    create table course_note (
+        id          integer primary key,
+        course_id   integer not null references course(id) on delete cascade,
+        topic_id    integer references topic(id) on delete set null,
+        title       text default '',
+        body        text default '',
+        created_at  text
+    );
+    create index course_note_course on course_note(course_id);
+    """ + _sync_columns("course_note"),
 ]
 
 
@@ -1808,7 +1821,46 @@ class Store:
         """In the order they were added (the overview sorts them in with the courses)."""
         return [self._project(r) for r in self.conn.execute("select * from project order by created_at, uid")]
 
-    # notes
+    # a subject's notes
+
+    @staticmethod
+    def _course_note(r: sqlite3.Row) -> CourseNote:
+        updated = r["updated_at"]
+        return CourseNote(id=r["id"], course_id=r["course_id"], topic_id=r["topic_id"], title=r["title"] or "",
+                          body=r["body"] or "",
+                          created_at=_dt(r["created_at"]) or datetime.now().replace(second=0, microsecond=0),
+                          updated_at=_utc(updated) if updated else None)
+
+    def add_course_note(self, n: CourseNote) -> CourseNote:
+        with self._tx() as c:
+            cur = c.execute("insert into course_note (course_id, topic_id, title, body, created_at) values (?, ?, ?, ?, ?)",
+                            (n.course_id, n.topic_id, n.title.strip(), n.body, _iso(n.created_at)))
+            n.id = cur.lastrowid
+        return self.get_course_note(n.id)  # type: ignore[arg-type,return-value]
+
+    def update_course_note(self, n: CourseNote) -> CourseNote:
+        with self._tx() as c:
+            cur = c.execute("update course_note set title = ?, body = ?, topic_id = ? where id = ?",
+                            (n.title.strip(), n.body, n.topic_id, n.id))
+            if cur.rowcount == 0:
+                raise StorageError("That note no longer exists.")
+        return self.get_course_note(n.id)  # type: ignore[arg-type,return-value]
+
+    def delete_course_note(self, note_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from course_note where id = ?", (note_id,))
+
+    def get_course_note(self, note_id: int) -> CourseNote | None:
+        r = self.conn.execute("select * from course_note where id = ?", (note_id,)).fetchone()
+        return self._course_note(r) if r else None
+
+    def list_course_notes(self, course_id: int) -> list[CourseNote]:
+        """Most recently changed first."""
+        rows = self.conn.execute("select * from course_note where course_id = ? order by updated_at desc, id desc",
+                                 (course_id,))
+        return [self._course_note(r) for r in rows]
+
+    # a project's notes
 
     @staticmethod
     def _note(r: sqlite3.Row) -> ProjectNote:

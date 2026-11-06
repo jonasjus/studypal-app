@@ -68,6 +68,7 @@ from .core.models import (
     Project,
     ProjectEntry,
     ProjectLink,
+    CourseNote,
     ProjectNote,
     ProjectSource,
     ProjectTask,
@@ -884,6 +885,11 @@ class Api:
         week_start, week_end = week_range(now.date(), cfg.week_start)
         progress = cram_progress(course, topics, now.date())
         week = sum(s.minutes for s in self._store.list_sessions(course_id, since=week_start, until=week_end))
+        notes = self._store.list_course_notes(course_id)
+        topic_notes: dict[int, int] = {}
+        for n in notes:
+            if n.topic_id is not None:
+                topic_notes[n.topic_id] = topic_notes.get(n.topic_id, 0) + 1
         topic_rows = []
         for t in topics:
             since = days_since(t.last_studied, now.date())
@@ -893,6 +899,7 @@ class Api:
                 "last_studied": "never" if since is None else "today" if since == 0
                 else "yesterday" if since == 1 else f"{since} days ago",
                 "reading": _reading(reading[t.id]) if t.id in reading else None,
+                "notes": topic_notes.get(t.id, 0),  # type: ignore[arg-type]
             })
         return {
             "course": {**_course(course), "progress": _progress(progress),
@@ -907,8 +914,61 @@ class Api:
             "total": format_minutes(self._store.total_minutes(course_id)),
             "reading": _reading(self._store.reading_progress(course_id)),
             "exams": len(self._store.list_exams(course_id)),
+            "notes": len(notes),
             "running": self._running(now),
         }
+
+    # ---------- a subject's notes: saved while you type, like a project's ----------
+
+    @action
+    def notes(self, course_id: int) -> dict:
+        course = self._store.get_course(course_id)
+        if course is None:
+            raise UserError("That subject no longer exists.")
+        topics = self._store.list_topics(course_id)
+        titles = {t.id: t.title for t in topics}
+        return {"course": _course(course), "topics": [{"id": t.id, "title": t.title} for t in topics],
+                "notes": [self._course_note_json(n, titles) for n in self._store.list_course_notes(course_id)]}
+
+    @staticmethod
+    def _course_note_json(n: CourseNote, titles: dict[int, str]) -> dict:
+        updated = n.updated_at or n.created_at
+        return {"id": n.id, "title": n.title, "body": n.body, "topic_id": n.topic_id,
+                "topic": titles.get(n.topic_id, "") if n.topic_id else "",  # type: ignore[arg-type]
+                "created_label": _when(n.created_at), "updated_label": _when(updated), "updated": _iso(updated)}
+
+    def _note_topic(self, course_id: int, topic_id: Any) -> int | None:
+        """A topic a note may point to: one of its own subject's, or none."""
+        if topic_id in (None, "", 0, "0"):
+            return None
+        topic = self._store.get_topic(int(topic_id))
+        if topic is None or topic.course_id != course_id:
+            raise UserError("That topic isn't part of this subject any more.")
+        return topic.id
+
+    @action
+    def add_course_note(self, course_id: int, topic_id: int | None = None) -> dict:
+        if self._store.get_course(course_id) is None:
+            raise UserError("That subject no longer exists.")
+        note = self._store.add_course_note(CourseNote(course_id=course_id, topic_id=self._note_topic(course_id, topic_id)))
+        return self._course_note_json(note, self._topic_titles())
+
+    @action
+    def save_course_note(self, data: dict) -> dict:
+        """Saves the title and text; the topic too, when `topic_id` is given (the text saves leave it be)."""
+        note_id = _int(data, "id")
+        old = self._store.get_course_note(note_id) if note_id else None
+        if old is None:
+            raise UserError("That note was deleted (maybe on another computer). Copy your text before leaving.")
+        topic_id = self._note_topic(old.course_id, data["topic_id"]) if "topic_id" in data else old.topic_id
+        note = self._store.update_course_note(replace(old, title=_text(data, "title") if "title" in data else old.title,
+                                                       body=str(data["body"] or "") if "body" in data else old.body,
+                                                       topic_id=topic_id))
+        return self._course_note_json(note, self._topic_titles())
+
+    @action
+    def delete_course_note(self, note_id: int) -> None:
+        self._store.delete_course_note(note_id)
 
     @action
     def courses(self) -> list[dict]:

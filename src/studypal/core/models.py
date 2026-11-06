@@ -269,6 +269,18 @@ class Project:
 
 
 @dataclass
+class CourseNote:
+    """A note for a subject, like a research project's notes, optionally about one of its topics."""
+    course_id: int
+    topic_id: int | None = None
+    title: str = ""
+    body: str = ""  # Markdown, with $...$ for maths
+    created_at: datetime = field(default_factory=lambda: datetime.now().replace(second=0, microsecond=0))
+    updated_at: datetime | None = None  # when it was last saved (from the sync column)
+    id: int | None = None
+
+
+@dataclass
 class ProjectNote:
     project_id: int
     title: str = ""

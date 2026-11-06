@@ -9,7 +9,7 @@ import tempfile
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
-from .models import (Course, Deadline, DeadlineKind, Exam, ExamQuestion, Priority, Project, ProjectEntry, ProjectLink,
+from .models import (Course, CourseNote, Deadline, DeadlineKind, Exam, ExamQuestion, Priority, Project, ProjectEntry, ProjectLink,
                      ProjectNote, ProjectSource, ProjectTask, Session, Source, Topic, TopicStatus, WeakSpot)
 from .storage import Store
 
@@ -154,6 +154,20 @@ PROJECT = {
 }
 
 
+COURSE_NOTES = [
+    ("INF301", "Kernels and SVMs", "The SVM dual, step by step",
+     "Start from the primal: minimise $\\frac{1}{2}\\lVert w \\rVert^2$ subject to $y_i(w^\\top x_i + b) \\ge 1$.\n\n"
+     "1. Write the Lagrangian with multipliers $\\alpha_i \\ge 0$.\n"
+     "2. Set the derivatives in $w$ and $b$ to zero: $w = \\sum_i \\alpha_i y_i x_i$ and $\\sum_i \\alpha_i y_i = 0$.\n"
+     "3. Substitute back. Only inner products $x_i^\\top x_j$ are left, which is where the **kernel trick** comes in.", 4),
+    ("INF301", "Model selection", "Nested cross-validation",
+     "- **Inner loop:** picks the hyperparameters.\n- **Outer loop:** estimates how well that whole procedure does.\n\n"
+     "Use it when you report a score for a model you also tuned. Plain CV on the same folds is optimistic.", 2),
+    ("INF301", None, "Exam plan",
+     "- Week 1: kernels, trees\n- Week 2: probabilistic models, neural networks\n- Last days: two past exams under time", 6),
+]
+
+
 def seed(store: Store, now: datetime | None = None) -> None:
     now = (now or datetime.now()).replace(second=0, microsecond=0)
     today = now.date()
@@ -219,6 +233,11 @@ def seed(store: Store, now: datetime | None = None) -> None:
             topic = titles[(day + i) % len(titles)]
             store.log_session(Session(courses[code].id, start, minutes + (day % 4) * 5, topic_ids[(code, topic)]))
 
+
+    # A few notes for a subject, most of them about one of its topics.
+    for code, topic, title, body, ago in COURSE_NOTES:
+        store.add_course_note(CourseNote(courses[code].id, topic_ids[(code, topic)] if topic else None, title, body,
+                                         created_at=now - timedelta(days=ago)))
 
     seed_project(store, now)
 

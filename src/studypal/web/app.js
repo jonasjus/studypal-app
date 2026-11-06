@@ -112,6 +112,7 @@ const ICONS = {
   check: '<svg class="menu-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
   copy: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
   exam: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1z"/><path d="M16 5h2a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h2"/><path d="M9 12l2 2 4-4"/></svg>',
+  note: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8M8 17h5"/></svg>',
   book: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>',
   research: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6.5L4.6 18.4A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.4-2.6L14 9.5V3"/><path d="M7.5 15h9"/></svg>',
   grip: '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
@@ -324,9 +325,10 @@ function topicRow(t) {
     <select class="status s-${t.status}" data-change="topic-status" data-id="${t.id}" aria-label="Status">${options}</select>
     <div class="grow"><div class="title">${esc(t.title)}</div>
       <div class="sub ${t.stale ? "stale" : ""}">Last studied ${esc(t.last_studied)}${t.stale ? ", time for a refresher" : ""}</div></div>
+    ${t.notes ? `<button class="topic-notes" data-act="topic-notes" data-topic="${t.id}" title="Notes about ${esc(t.title)}">${ICONS.note} ${t.notes}</button>` : ""}
     ${reading}
     <span class="conf" title="How confident you feel">${dots}</span>
-    <span class="row-actions">${iconBtn("play", "start-studying", `data-course="${state.view.id}" data-topic="${t.id}"`, "Study this topic")}${iconBtn("edit", "edit-topic", `data-id="${t.id}"`, "Edit")}${iconBtn("trash", "delete-topic", `data-id="${t.id}"`, "Delete")}</span>
+    <span class="row-actions">${iconBtn("note", "topic-notes", `data-topic="${t.id}"`, t.notes ? "Notes about this topic" : "Write a note about this topic")}${iconBtn("play", "start-studying", `data-course="${state.view.id}" data-topic="${t.id}"`, "Study this topic")}${iconBtn("edit", "edit-topic", `data-id="${t.id}"`, "Edit")}${iconBtn("trash", "delete-topic", `data-id="${t.id}"`, "Delete")}</span>
   </li>`;
 }
 
@@ -351,6 +353,7 @@ function renderSubject(d) {
       <div class="title-actions">
         <button class="btn" data-act="open-reading" data-id="${c.id}">${ICONS.book} ${esc(readingLabel)}</button>
         <button class="btn" data-act="open-exams" data-id="${c.id}">${ICONS.exam} ${d.exams ? `Exams ${d.exams}` : "Exams"}</button>
+        <button class="btn" data-act="open-notes" data-id="${c.id}">${ICONS.note} ${d.notes ? `Notes ${d.notes}` : "Notes"}</button>
         <button class="btn" data-act="log-time" data-course="${c.id}">Log time</button>
         <button class="btn primary" data-act="start-studying" data-course="${c.id}">${ICONS.play} Start studying</button>
         <button class="icon-btn" data-act="course-menu" data-id="${c.id}" title="More" aria-label="More">${ICONS.more}</button>
@@ -689,6 +692,7 @@ const VIEWS = {
   reading: { load: (id) => call("reading", id), render: (d) => renderReading(d) },
   exams: { load: (id) => call("exams", id), render: (d) => renderExams(d) },
   research: { load: (id) => call("research", id), render: (d) => renderResearch(d) },
+  notes: { load: (id) => call("notes", id), render: (d) => renderNotes(d) },
 };
 
 function renderView() {
@@ -1806,7 +1810,7 @@ try { applyType(JSON.parse(localStorage.getItem("studypal.type") || "{}")); } ca
 function start() {
   try { setSidebarCollapsed(localStorage.getItem("studypal.sidebar") === "collapsed"); } catch (e) { /* open */ }
   // #subject/3 or #reading/3 opens straight onto that page (handy when working on the interface).
-  const m = location.hash.match(/^#(subject|reading|exams|research|exam|take|attempt)\/(\d+)$/);
+  const m = location.hash.match(/^#(subject|reading|exams|notes|research|exam|take|attempt)\/(\d+)$/);
   if (m) state.view = { name: m[1], id: Number(m[2]) };
   call("get_type").then((t) => {
     if (t.font !== activeType.font || t.size !== activeType.size) setType(t, false);
