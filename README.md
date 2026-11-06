@@ -50,6 +50,17 @@ download it. Each zip is kept for 30 days.
 1. Download `StudyPal-windows`, unzip it anywhere and double-click `StudyPal.exe`.
 2. If SmartScreen warns about an unknown app, click **More info → Run anyway**.
 
+### iPhone
+
+The iPhone version is a web app with the same features as the desktop app. Open it in Safari, tap
+**Share → Add to Home Screen**, and it opens like an app from then on. The first start downloads
+Python (about 15 MB), so it takes a little while. After that it works offline too.
+
+Your data is kept on the phone. To have the same subjects on the phone and the computer, sign in to the
+same account on both. Two things work differently on the phone:
+- **Exams:** add photos of the pages rather than PDFs. The phone can't read PDFs yet.
+- **Notifications:** they only arrive while the app is open.
+
 ### Setting up the exam features
 
 The exam features need a model. The easiest is a free Gemini key from
@@ -78,6 +89,16 @@ packaging\build-windows.bat
 ```
 
 `python -m studypal.devserver --demo` runs the interface in a browser at http://localhost:8765.
+
+The iPhone version runs the same Python in the browser with [Pyodide](https://pyodide.org). To build it
+and try it:
+
+```sh
+.venv/bin/python mobile/build.py                 # makes dist/web
+python3 -m http.server 8811 -d dist/web          # then open http://localhost:8811/?demo
+```
+
+`.github/workflows/iphone.yml` publishes it on GitHub Pages.
 
 ## License
 

@@ -104,7 +104,8 @@ function pickBannerInBrowser() {
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".png,.jpg,.jpeg,.webp,.heic,.heif";
+    // On the iPhone, "image/*" makes iOS hand over a JPEG (it can't convert HEIC in the browser).
+    input.accept = document.documentElement.classList.contains("phone-app") ? "image/*" : ".png,.jpg,.jpeg,.webp,.heic,.heif";
     input.addEventListener("change", () => {
       const f = input.files[0];
       if (!f) return resolve(null);

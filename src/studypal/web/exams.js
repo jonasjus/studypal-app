@@ -234,7 +234,9 @@ function pickInBrowser() {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = ".pdf,.png,.jpg,.jpeg,.webp,.heic,.heif,.txt,.md";
+    // On the iPhone: photos as JPEG (iOS converts them for "image/*"), and no PDFs, which it can't read yet.
+    input.accept = document.documentElement.classList.contains("phone-app") ? "image/*,.txt,.md"
+      : ".pdf,.png,.jpg,.jpeg,.webp,.heic,.heif,.txt,.md";
     input.addEventListener("change", async () => {
       const out = [];
       for (const f of input.files) {

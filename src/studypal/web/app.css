@@ -859,3 +859,69 @@ body:has(#overall:not([hidden])) #toasts { bottom: 64px; }
 .your-answer > .faint { margin: 6px 0; }
 .attempt-feedback { color: var(--text); font-size: 0.8438rem; }
 .attempt-feedback .md p { margin: 0; }
+
+/* ---------- phones: one column, the sidebar as a drawer, nothing that needs a mouse ---------- */
+.drawer-btn { display: none; }
+@media (max-width: 700px) {
+  .topbar { gap: 8px; padding: calc(8px + env(safe-area-inset-top)) 12px 8px; }
+  .drawer-btn { display: inline-grid; margin-left: -6px; }
+  .today { display: none; }
+  .topbar-actions { gap: 6px; }
+  .topbar-actions .btn { padding: 0 10px; font-size: 0.875rem; }
+  #jobs .jobs-pill { max-width: 120px; }
+
+  #sidebar {
+    position: fixed; z-index: 30; top: 0; bottom: 0; left: 0; width: min(84vw, 300px);
+    padding: calc(14px + env(safe-area-inset-top)) 12px calc(14px + env(safe-area-inset-bottom));
+    transform: translateX(-100%); transition: transform .2s ease; box-shadow: none;
+  }
+  body.drawer-open #sidebar { transform: none; box-shadow: 0 0 40px rgba(0, 0, 0, .25); }
+  body.drawer-open .shell::after { content: ""; position: fixed; inset: 0; z-index: 29; background: rgba(0, 0, 0, .3); }
+  .side-toggle { display: none; }
+  .side-item { min-height: 44px; }
+
+  main { padding: 12px 12px calc(28px + env(safe-area-inset-bottom)); }
+  #overall { padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); gap: 10px; }
+  .greeting h1 { font-size: 1.5rem; }
+
+  /* Cards: a narrower countdown, and the code, name and exam date wrap instead of squeezing. */
+  .card { grid-template-columns: 44px minmax(0, 1fr); column-gap: 12px; padding: 14px 14px 14px 10px; }
+  .tt-num { font-size: 2.25rem; }
+  .card-top { flex-wrap: wrap; column-gap: 8px; row-gap: 0; }
+  .card-name { white-space: normal; flex-basis: 100%; order: 2; }
+  .card-exam { margin-left: auto; order: 1; font-size: 0.8125rem; }
+  .card-actions, .drag-handle { display: none; }
+
+  /* Topics: the name on its own line, then the status, reading and confidence, with the buttons. */
+  .topic-row { flex-wrap: wrap; row-gap: 6px; padding-top: 10px; padding-bottom: 10px; }
+  .topic-row .grow { order: -2; flex: 1 1 calc(100% - 110px); }
+  .topic-row .title { white-space: normal; }
+  .topic-row .row-actions { order: -1; visibility: visible; align-self: flex-start; }
+  .tl-labels .mid { display: none; }
+  .conf { gap: 6px; }
+  .conf button { width: 20px; height: 20px; }
+  .meta { column-gap: 10px; }
+
+  .section-head, .title-line { flex-wrap: wrap; }
+  .panel .section-head { padding: 12px 14px 2px; }
+  .title-actions { margin-left: 0; width: 100%; }
+  .title-line .code { font-size: 1.375rem; }
+  .course-banner.on-page { height: 72px; }
+  .banner-change { opacity: 1; }
+
+  /* Forms open as a sheet from the bottom, with fields big enough that iOS doesn't zoom in on them. */
+  .backdrop { padding: calc(40px + env(safe-area-inset-top)) 0 0; place-items: end stretch; }
+  .backdrop .modal { max-width: none; max-height: 100%;
+    border-radius: 12px 12px 0 0; padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); border-width: 1px 0 0; }
+  input[type=text], input[type=password], input[type=number], input[type=date], input[type=datetime-local],
+  select, select.input, textarea, .take-answer { font-size: 16px; }
+  .field-row { flex-direction: column; gap: 0; }
+  #toasts { left: 12px; right: 12px; transform: none; bottom: calc(16px + env(safe-area-inset-bottom)); }
+  .toast { max-width: none; }
+}
+/* Touch screens have no hover, so what hover shows is always there (or left out). */
+@media (hover: none) {
+  .row.touched .row-actions, .entry.touched .row-actions { display: flex; }
+  .banner-change { opacity: 1; }
+  .card:hover { background: var(--surface); }
+}

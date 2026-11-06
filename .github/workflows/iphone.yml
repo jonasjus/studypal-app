@@ -1,0 +1,41 @@
+# Builds the iPhone version (mobile/build.py) and publishes it on GitHub Pages. Needs Pages turned on with
+# "GitHub Actions" as its source (Settings → Pages), and this branch allowed in the github-pages environment.
+name: iPhone web app
+
+on:
+  push:
+    branches: [iphone]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pillow
+      - run: python mobile/build.py dist/web
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

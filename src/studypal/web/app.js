@@ -1803,8 +1803,33 @@ try { applyType(JSON.parse(localStorage.getItem("studypal.type") || "{}")); } ca
 
 // ---------- start ----------
 
+// ---------- on a phone the sidebar is a drawer, opened from the top bar ----------
+
+const phone = matchMedia("(max-width: 700px)");
+const setDrawer = (open) => document.body.classList.toggle("drawer-open", open);
+actions["open-drawer"] = () => setDrawer(true);
+document.addEventListener("click", (e) => {
+  // Anything chosen in the drawer, or a tap on the shade beside it, closes it.
+  if (document.body.classList.contains("drawer-open") && (e.target.closest("#sidebar button") || e.target === $(".shell"))) {
+    setTimeout(() => setDrawer(false), 0);
+  }
+});
+phone.addEventListener("change", () => setDrawer(false));
+
+// Without a mouse nothing hovers, so tapping a row shows the buttons hovering would (edit, delete, ...).
+if (matchMedia("(hover: none)").matches) {
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest(".row, .entry");
+    if (row && e.target.closest("button, a, input, select, textarea, label")) return;
+    document.querySelectorAll(".touched").forEach((r) => r !== row && r.classList.remove("touched"));
+    if (row) row.classList.toggle("touched");
+  });
+}
+
 function start() {
-  try { setSidebarCollapsed(localStorage.getItem("studypal.sidebar") === "collapsed"); } catch (e) { /* open */ }
+  try {
+    setSidebarCollapsed(!phone.matches && localStorage.getItem("studypal.sidebar") === "collapsed");
+  } catch (e) { /* open */ }
   // #subject/3 or #reading/3 opens straight onto that page (handy when working on the interface).
   const m = location.hash.match(/^#(subject|reading|exams|research|exam|take|attempt)\/(\d+)$/);
   if (m) state.view = { name: m[1], id: Number(m[2]) };
