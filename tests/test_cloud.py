@@ -427,3 +427,17 @@ def test_a_revoked_account_hands_over_to_the_next(laptop: Api, fake: FakeCloud) 
     r = laptop.cloud_sync()
     assert r["signed_out"] and "bo@example.com" in r["error"]
     assert emails(laptop) == [("ada@example.com", True)]
+
+
+def test_the_cloud_accepts_every_kind_of_row_the_app_syncs() -> None:
+    """study_rows only takes the kinds of rows its check lists (the newest migration that sets it), so a new
+    table needs a migration too, or signing in would stop syncing as soon as one of its rows exists."""
+    import re
+    from pathlib import Path
+
+    from studypal.core.logic.merge import TABLES
+
+    migrations = sorted((Path(__file__).resolve().parent.parent / "supabase" / "migrations").glob("*.sql"))
+    newest = [m.read_text() for m in migrations if "study_rows_tbl_check" in m.read_text()][-1]
+    allowed = set(re.findall(r"'([a-z_]+)'", newest.split("check (tbl in", 1)[1].split(")")[0]))
+    assert set(TABLES) <= allowed, f"add these to a migration: {sorted(set(TABLES) - allowed)}"
