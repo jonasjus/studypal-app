@@ -2,10 +2,13 @@
 // connection (so updates arrive) and taken from the cache when there isn't; Pyodide's files never change
 // for a version, so they come from the cache first.
 
-const CACHE = "studypal-v1";
+const CACHE = "studypal-v1";  // a new name would make everyone download Python again
 
 self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener("activate", (e) => e.waitUntil((async () => {
+  for (const key of await caches.keys()) if (key !== CACHE) await caches.delete(key);
+  await self.clients.claim();
+})()));
 
 self.addEventListener("fetch", (e) => {
   const req = e.request;
@@ -20,7 +23,9 @@ self.addEventListener("fetch", (e) => {
       return res;
     }));
   } else if (url.origin === location.origin) {
-    e.respondWith(fetch(req).then((res) => {
+    // "no-cache" asks GitHub whether the file changed (a quick 304 when it didn't), rather than taking the
+    // browser's copy, which GitHub Pages lets it keep for 10 minutes after an update.
+    e.respondWith(fetch(req, { cache: "no-cache" }).then((res) => {
       if (res.ok) caches.open(CACHE).then((cache) => cache.put(req, res.clone()));
       return res;
     }).catch(() => caches.match(req, { ignoreSearch: true })));

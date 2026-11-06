@@ -95,6 +95,10 @@
   worker.postMessage({ start: true, demo });
 
   if ("serviceWorker" in navigator && location.protocol === "https:") {
-    navigator.serviceWorker.register("sw.js").catch(() => { /* works without, just not offline */ });
+    // An update replaces the service worker; reload once so the page is the new version too.
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.addEventListener("controllerchange", () => location.reload(), { once: true });
+    }
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).catch(() => { /* works without, just not offline */ });
   }
 })();
