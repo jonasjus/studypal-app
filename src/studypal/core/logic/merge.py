@@ -35,6 +35,7 @@ LINKS: dict[str, dict[str, tuple[str, bool]]] = {
     "exam_file": {"exam": ("exam", True)},
     "exam_question": {"exam": ("exam", True), "topic": ("topic", False)},
     "exam_attempt": {"exam": ("exam", True)},
+    "course_note": {"course": ("course", True), "topic": ("topic", False)},
     "project": {},
     "project_note": {"project": ("project", True)},
     "project_entry": {"project": ("project", True)},

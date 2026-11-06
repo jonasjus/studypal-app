@@ -67,6 +67,9 @@ def to_markdown(store: Store, now: datetime | None = None) -> str:
                         box = "x" if s.read else " "
                         out.append(f"  - [{box}] {s.number} {s.title}".rstrip() + ("" if s.required else " (optional)"))
                 out.append("")
+        for n in store.list_course_notes(course.id):  # type: ignore[arg-type]
+            topic = topics_by_id[n.topic_id].title if n.topic_id in topics_by_id else ""
+            out += [f"### Note: {n.title or 'Untitled'}" + (f" ({topic})" if topic else ""), "", n.body, ""]
         out += ["### Sessions", ""]
         out += _table(["Started", "Minutes", "Topic", "Note"],
                       [[format_datetime(s.started_at), s.minutes,

@@ -24,6 +24,7 @@ FIELDS: dict[str, list[str]] = {
     "exam_question": ["number", "prompt", "answer", "marks", "result", "note", "why", "position", "parent_number",
                       "question_type", "topic_tags", "has_figure"],
     "exam_attempt": ["started_at", "minutes", "finished_at", "seconds", "items", "summary", "graded"],
+    "course_note": ["title", "body", "created_at"],
     "project": ["title", "description", "status", "tags", "start_on", "end_on", "color", "position", "created_at"],
     "project_note": ["title", "body", "created_at"],
     "project_entry": ["day", "body"],

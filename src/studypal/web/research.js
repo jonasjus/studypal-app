@@ -36,10 +36,16 @@ function remember(key, value) {
 }
 
 state.researchTab = remembered("studypal.researchTab", "notes");
-state.openNote = {};         // project id -> the note shown
+state.openNote = {};         // "research:<id>" or "notes:<course id>" -> the note shown
 state.noteDraft = null;      // {id, title, body} typed but not saved yet
 state.notePreview = false;
 state.noteSearch = "";
+state.noteTopic = "";        // a subject's notes shown: "" all, "none" without a topic, else a topic id
+
+// The notes editor serves both a project's notes and a subject's (the Notes page); these say which.
+const courseNotes = () => state.view.name === "notes";
+const noteKey = () => `${state.view.name}:${state.view.id}`;
+const noteCall = (what) => (courseNotes() ? `${what}_course_note` : `${what}_note`);
 state.sourceFilter = "all";
 
 // ---------- the card in the overview ----------
@@ -125,9 +131,30 @@ function noteMatches(n, query) {
   return query.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
 }
 
+function topicMatches(n) {
+  if (!courseNotes() || !state.noteTopic) return true;
+  return state.noteTopic === "none" ? !n.topic_id : String(n.topic_id) === state.noteTopic;
+}
+
 function currentNote(d) {
-  const id = state.openNote[d.project.id];
-  return d.notes.find((n) => n.id === id) || d.notes[0] || null;
+  const id = state.openNote[noteKey()];
+  const shown = d.notes.filter(topicMatches);
+  return shown.find((n) => n.id === id) || shown[0] || null;
+}
+
+// A subject's note can point to one of its topics; the list can show just one topic's notes.
+function noteTopicPicker(d, note) {
+  if (!courseNotes()) return "";
+  const options = d.topics.map((t) => `<option value="${t.id}"${t.id === note.topic_id ? " selected" : ""}>${esc(t.title)}</option>`).join("");
+  return `<select class="input note-topic" data-change="note-topic" data-id="${note.id}" aria-label="Topic">
+    <option value="">No topic</option>${options}</select>`;
+}
+
+function noteTopicFilter(d) {
+  if (!courseNotes() || !d.topics.length) return "";
+  const opt = (v, label) => `<option value="${v}"${state.noteTopic === v ? " selected" : ""}>${esc(label)}</option>`;
+  return `<select class="input note-filter" data-change="note-filter" aria-label="Show notes about">
+    ${opt("", "All topics")}${opt("none", "No topic")}${d.topics.map((t) => opt(String(t.id), t.title)).join("")}</select>`;
 }
 
 function noteSnippet(body) {
@@ -136,16 +163,22 @@ function noteSnippet(body) {
 
 function notesTab(d) {
   const note = currentNote(d);
-  if (note) state.openNote[d.project.id] = note.id;
-  const items = d.notes.map((n) => `<li class="note-item${note && n.id === note.id ? " on" : ""}" data-act="open-note" data-id="${n.id}"
+  if (note) state.openNote[noteKey()] = note.id;
+  const shown = d.notes.filter(topicMatches);
+  const items = shown.map((n) => `<li class="note-item${note && n.id === note.id ? " on" : ""}" data-act="open-note" data-id="${n.id}"
       data-search="${esc(`${n.title}\n${n.body}`)}"${noteMatches(n, state.noteSearch) ? "" : " hidden"}>
       <div class="note-name">${esc(n.title || "Untitled note")}</div>
+      ${n.topic && !state.noteTopic ? `<div class="note-topic-tag">${esc(n.topic)}</div>` : ""}
       <div class="note-snip">${esc(noteSnippet(n.body)) || '<span class="faint">Empty</span>'}</div>
       <div class="note-when">${esc(n.updated_label)}</div>
     </li>`).join("");
   let editor;
   if (!note) {
-    editor = `<div class="note-empty"><p>Notes are for ideas, meeting notes, derivations, anything you want to keep.
+    const what = !courseNotes() ? "Notes are for ideas, meeting notes, derivations, anything you want to keep."
+      : state.noteTopic && state.noteTopic !== "none"
+        ? `No notes about ${esc(d.topics.find((t) => String(t.id) === state.noteTopic)?.title || "this topic")} yet.`
+        : "Notes are for summaries, worked examples, things to remember. A note can point to one of the topics, so you find it from there.";
+    editor = `<div class="note-empty"><p>${what}
       They're saved as you type, and support <b>Markdown</b> and maths like <code>$E = mc^2$</code>.</p>
       <button class="btn primary" data-act="add-note">+ New note</button></div>`;
   } else {
@@ -158,6 +191,7 @@ function notesTab(d) {
         <div class="seg small-seg"><label><input type="radio" name="note-mode" data-change="note-mode" value="edit"${state.notePreview ? "" : " checked"}>Write</label><label><input type="radio" name="note-mode" data-change="note-mode" value="preview"${state.notePreview ? " checked" : ""}>Preview</label></div>
         <button class="icon-btn" data-act="note-menu" data-id="${note.id}" title="More" aria-label="More">${ICONS.more}</button>
       </div>
+      ${courseNotes() ? `<div class="note-about"><span class="muted">About</span>${noteTopicPicker(d, note)}</div>` : ""}
       ${body}
       <div class="note-foot"><span>Created ${esc(note.created_label)}</span><span id="note-saved">${state.noteDraft && state.noteDraft.id === note.id ? "Not saved yet…" : `Saved · edited ${esc(note.updated_label)}`}</span></div>`;
   }
@@ -167,7 +201,8 @@ function notesTab(d) {
         <input type="search" id="note-search" placeholder="Search notes" value="${esc(state.noteSearch)}" autocomplete="off" aria-label="Search notes">
         <button class="btn small" data-act="add-note" title="New note">+ New</button>
       </div>
-      ${d.notes.length ? `<ul>${items}</ul><p class="note-none faint"${d.notes.some((n) => noteMatches(n, state.noteSearch)) ? " hidden" : ""}>No notes match.</p>` : '<p class="faint note-none">No notes yet.</p>'}
+      ${noteTopicFilter(d) ? `<div class="note-tools">${noteTopicFilter(d)}</div>` : ""}
+      ${shown.length ? `<ul>${items}</ul><p class="note-none faint"${shown.some((n) => noteMatches(n, state.noteSearch)) ? " hidden" : ""}>No notes match.</p>` : `<p class="faint note-none">${d.notes.length ? "No notes about this topic." : "No notes yet."}</p>`}
     </aside>
     <div class="note-editor">${editor}</div>
   </div>`;
@@ -245,6 +280,17 @@ function timeTab(d) {
     ${rows ? `<ul class="list">${rows}</ul>` : `<p class="empty-small">Press <b>Start working</b> for a timer or Pomodoro, and the time shows up here and in the week chart.</p>`}`;
 }
 
+// ---------- a subject's Notes page ----------
+
+function renderNotes(d) {
+  const c = d.course;
+  return `<div class="subject-head" style="--course:${esc(cc(c.color))}">
+    <div class="crumbs"><button class="btn small ghost" data-act="open-subject" data-id="${c.id}">${ICONS.back} ${esc(c.code)} ${esc(c.name)}</button></div>
+    <div class="title-line"><h1>Notes</h1>${d.notes.length ? `<span class="h-count">${d.notes.length}</span>` : ""}</div>
+  </div>
+  <section class="panel tab-panel course-notes" style="--course:${esc(cc(c.color))}">${notesTab(d)}</section>`;
+}
+
 // ---------- notes: saved while you type ----------
 
 let noteTimer = null;
@@ -268,11 +314,11 @@ async function saveNote() {
   if (!draft) return;
   noteSaving = (async () => {
     try {
-      const saved = await call("save_note", draft);
+      const saved = await call(noteCall("save"), draft);
       // Only clean if nothing more was typed while this was on its way.
       if (state.noteDraft && state.noteDraft.title === draft.title && state.noteDraft.body === draft.body) state.noteDraft = null;
       const note = state.data?.notes?.find((n) => n.id === saved.id);
-      if (note) Object.assign(note, saved);
+      if (note) Object.assign(note, { ...saved, topic_id: note.topic_id, topic: note.topic });
       const item = document.querySelector(`.note-item[data-id="${saved.id}"]`);
       if (item) {
         item.querySelector(".note-name").textContent = saved.title || "Untitled note";
@@ -482,11 +528,39 @@ Object.assign(actions, {
     ]);
   },
 
+  "open-notes": async (el) => {
+    await beforeRefresh();
+    state.noteTopic = "";
+    state.noteSearch = "";
+    go({ name: "notes", id: Number(el.dataset.id) });
+  },
+  // From a topic on the subject page: its notes, or a new one about it if there are none yet.
+  "topic-notes": async (el) => {
+    const courseId = state.view.id, topicId = Number(el.dataset.topic);
+    const topic = state.data.topics.find((t) => t.id === topicId);
+    state.noteTopic = String(topicId);
+    state.noteSearch = "";
+    state.notePreview = false;
+    try {
+      if (topic && !topic.notes) {
+        const n = await call("add_course_note", courseId, topicId);
+        state.openNote[`notes:${courseId}`] = n.id;
+        scheduleSync();
+      }
+      state.view = { name: "notes", id: courseId };
+      $("#view").scrollTop = 0;
+      await refresh();
+      if (topic && !topic.notes) $("#note-title")?.focus();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  },
   "add-note": async () => {
     await beforeRefresh();
     try {
-      const n = await call("add_note", state.view.id);
-      state.openNote[state.view.id] = n.id;
+      const topic = courseNotes() && state.noteTopic && state.noteTopic !== "none" ? Number(state.noteTopic) : null;
+      const n = await (courseNotes() ? call("add_course_note", state.view.id, topic) : call("add_note", state.view.id));
+      state.openNote[noteKey()] = n.id;
       state.notePreview = false;
       state.noteSearch = "";
       await refresh();
@@ -498,7 +572,7 @@ Object.assign(actions, {
   },
   "open-note": async (el) => {
     await beforeRefresh();
-    state.openNote[state.view.id] = Number(el.dataset.id);
+    state.openNote[noteKey()] = Number(el.dataset.id);
     refresh();
   },
   "note-edit-here": async () => {
@@ -515,7 +589,7 @@ Object.assign(actions, {
         if (await confirmBox(`Delete “${n.title || "Untitled note"}”?`, "The note is deleted for good.")) {
           state.noteDraft = null;
           clearTimeout(noteTimer);
-          act("delete_note", n.id);
+          act(noteCall("delete"), n.id);
         }
       } },
     ]);
@@ -566,6 +640,14 @@ document.addEventListener("change", (e) => {
   if (change === "project-status") act("set_project_status", Number(el.dataset.id), el.value);
   if (change === "source-status") act("set_source_status", Number(el.dataset.id), el.value);
   if (change === "source-filter") { state.sourceFilter = el.value; refresh(); }
+  if (change === "note-topic") {
+    // Showing one topic's notes, the list follows the note to its new topic rather than losing it.
+    if (state.noteTopic) state.noteTopic = el.value || "none";
+    beforeRefresh().then(() => act("save_course_note", { id: Number(el.dataset.id), topic_id: el.value ? Number(el.value) : null }));
+  }
+  if (change === "note-filter") {
+    beforeRefresh().then(() => { state.noteTopic = el.value; refresh(); });
+  }
   if (change === "note-mode") {
     state.notePreview = el.value === "preview";
     beforeRefresh().then(refresh).then(() => { if (!state.notePreview) $("#note-body")?.focus(); });
