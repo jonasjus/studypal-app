@@ -57,6 +57,11 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+/* The window itself never moves: dragging on the top bar, the sidebar or anything else that doesn't scroll
+   doesn't pull the page and let it bounce back. Lists that scroll stop at their ends instead of dragging
+   the page with them. */
+html, body { overflow: hidden; overscroll-behavior: none; }
+main, #side-nav, .modal { overscroll-behavior: none; }
 body {
   background: var(--bg);
   color: var(--text);
