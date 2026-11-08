@@ -133,6 +133,17 @@ def test_timer(api: Api) -> None:
     assert api.overview()["running"] is None
 
 
+def test_running_says_when_nothing_is_running(api: Api) -> None:
+    """Pages without the timer in their data ask with running(); a stopped timer must come back as None,
+    not as @action's {"ok": True} (which the page would draw as a timer still going)."""
+    cid = add_course(api)
+    assert api.running() == {"running": None}
+    api.timer_start(cid, None)
+    assert api.running()["running"]["kind"] == "timer"
+    api.timer_stop()
+    assert api.running() == {"running": None}
+
+
 def test_stopping_a_pomodoro_straight_away(api: Api) -> None:
     cid = add_course(api)
     api.pomo_start(cid, None)

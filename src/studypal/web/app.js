@@ -658,6 +658,11 @@ async function refresh() {
   const view = VIEWS[v.name] || VIEWS.overview;
   try {
     data = await view.load(v.id);
+    // The timer bar shows on every page. Pages whose data doesn't say what's running (the reading list,
+    // exams, notes) ask separately, so stopping the timer there takes the bar away straight away.
+    if (data && typeof data === "object" && !("running" in data)) {
+      try { data.running = (await call("running")).running; } catch (e) { /* the bar stays as it was */ }
+    }
   } catch (e) {
     if (v.name !== "overview") { state.view = { name: "overview" }; return refresh(); }
     main.innerHTML = `<p class="loading">${esc(e.message)}</p>`;

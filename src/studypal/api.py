@@ -1034,6 +1034,12 @@ class Api:
         return {"messages": messages, "changed": changed or bool(messages)}
 
     @action
+    def running(self) -> dict:
+        """The timer or Pomodoro going now ({"running": None} if nothing is), for pages whose data doesn't
+        include it. Wrapped, because @action turns a bare None into {"ok": True}."""
+        return {"running": self._running(datetime.now().replace(microsecond=0))}
+
+    @action
     def preview_sound(self) -> None:
         """Play the pling, so Settings can show what it sounds like."""
         self._play(sound.FOCUS_DONE)
