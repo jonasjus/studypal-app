@@ -43,6 +43,7 @@ LINKS: dict[str, dict[str, tuple[str, bool]]] = {
     "project_source": {"project": ("project", True)},
     "project_task": {"project": ("project", True)},
     "project_session": {"project": ("project", True)},
+    "todo": {},
     "sent": {"deadline": ("deadline", True)},
 }
 TABLES = list(LINKS)

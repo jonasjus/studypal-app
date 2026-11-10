@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "studypal"
-version = "0.1.0"
+dynamic = ["version"]
 description = "StudyPal: a calm study tracker for exam season, as a regular desktop app"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,9 @@ dev = ["pytest>=9.1", "pyinstaller>=6.16"]
 
 [project.gui-scripts]
 studypal = "studypal.app:main"
+
+[tool.hatch.version]
+path = "src/studypal/__init__.py"  # the one place the version is written
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/studypal"]

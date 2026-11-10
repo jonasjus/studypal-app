@@ -130,6 +130,7 @@ class ActiveTimer:
     started_at: datetime
     topic_id: int | None = None
     project_id: int | None = None  # set instead of course_id when timing a research project
+    goal_minutes: int | None = None  # how long you mean to study (spun on the wheel); the clock counts down to it
 
 
 @dataclass
@@ -322,6 +323,18 @@ class ProjectSource:
     link: str = ""  # DOI or URL
     status: str = "to_read"
     annotation: str = ""
+    id: int | None = None
+
+
+@dataclass
+class Todo:
+    """Something on a day's to-do list."""
+
+    day: date
+    text: str
+    done: bool = False
+    done_at: datetime | None = None
+    position: int = 0
     id: int | None = None
 
 

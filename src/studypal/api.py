@@ -49,6 +49,10 @@ from .core.logic.notify import banner_groups
 from .core.logic.pomodoro import PomodoroRun, PomodoroSettings, focus_done, overtime, phase_length, remaining
 from .core.logic.reading import ReadingParseError, ReadingProgress, parse_section_ranges, parse_toc
 from .core.logic.stats import days_since, format_minutes, is_stale, minutes_per_day, week_range
+from . import __version__
+from .core.logic.badges import badges as collect_badges
+from .core.logic.habits import habits as study_habits
+from .core.logic.plant import plant as grow_plant
 from .core.logic.timeline import CramProgress, Phase, cram_progress
 from .core.models import (
     COURSE_COLORS,
@@ -72,6 +76,7 @@ from .core.models import (
     ProjectNote,
     ProjectSource,
     ProjectTask,
+    Todo,
     Section,
     Session,
     Source,
@@ -153,7 +158,9 @@ def _overall(summaries: list[CourseSummary]) -> dict | None:
         mood, mood_words = "ahead", "ahead of schedule"
     else:
         mood, mood_words = "on_track", "on track" if started else ""
-    return {"done": done, "elapsed": elapsed, "behind": behind, "is_behind": mood == "behind",
+    p = grow_plant(done, elapsed, started)
+    return {"plant": {"health": p.health.value, "leaves": p.leaves, "words": p.words},
+            "done": done, "elapsed": elapsed, "behind": behind, "is_behind": mood == "behind",
             "show_today": started, "percent": round(done * 100), "words": words, "mood": mood,
             "mood_words": mood_words, "total_time": format_minutes(sum(s.total_minutes for s in summaries))}
 
@@ -432,6 +439,7 @@ class Api:
         self._notify = notify
         self._window = None  # set by the app once the window exists (for the save dialog)
         self._last_pomo_phase: tuple[str, int, bool] | None = None
+        self._goal_announced: datetime | None = None  # the start of the timer whose spun goal we've plinged for
         self._play = play
         self._pending: list[str] = []  # messages from the background check, for the window's next tick
         self._pending_changed = False
@@ -755,7 +763,7 @@ class Api:
 
     @action
     def get_settings(self) -> dict:
-        return {key: self._setting(key) for key in SETTINGS}
+        return {**{key: self._setting(key) for key in SETTINGS}, "version": __version__}
 
     @action
     def save_settings(self, data: dict) -> None:
@@ -784,7 +792,8 @@ class Api:
                     **self._running_label(timer.course_id, timer.project_id, codes),
                     "topic": topics.get(timer.topic_id) if timer.topic_id else None,
                     "started_at": timer.started_at.isoformat(timespec="seconds"),
-                    "elapsed_seconds": int((now - timer.started_at).total_seconds())}
+                    "elapsed_seconds": int((now - timer.started_at).total_seconds()),
+                    "goal_seconds": timer.goal_minutes * 60 if timer.goal_minutes else None}
         run = self._store.get_pomodoro()
         if run is not None:
             return self._pomodoro_json(run, now, codes, topics)
@@ -843,6 +852,24 @@ class Api:
             "colors": list(COURSE_COLORS),
             "next_color": self._store.next_color(),
         }
+
+    @action
+    def badges(self) -> dict:
+        """Every badge with your progress, and which earned ones you haven't been told about yet."""
+        sessions = self._store.list_sessions() + self._store.list_project_sessions()
+        all_badges = collect_badges(sessions, self._store.list_topics(), self._store.list_courses())
+        seen = set(filter(None, (self._store.get_setting("badges.seen") or "").split(",")))
+        items = [{"id": b.kind.id, "name": b.kind.name, "description": b.kind.description, "icon": b.kind.icon,
+                  "tier": b.kind.tier, "earned": b.earned, "current": b.current, "target": b.target,
+                  "earned_label": f"{b.earned_on.day} {b.earned_on:%b %Y}" if b.earned_on else ""} for b in all_badges]
+        return {"items": items, "earned": sum(1 for b in all_badges if b.earned), "total": len(all_badges),
+                "new": [i["id"] for i in items if i["earned"] and i["id"] not in seen]}
+
+    @action
+    def badges_seen(self, ids: list[str]) -> None:
+        """Remember that these badges have been announced, so each one only gets its "new badge" once."""
+        seen = set(filter(None, (self._store.get_setting("badges.seen") or "").split(",")))
+        self._store.set_setting("badges.seen", ",".join(sorted(seen | {str(i) for i in ids})))
 
     def _overview_list(self, courses: list[CourseSummary], projects: list[Project], done: bool, now: datetime) -> list[dict]:
         """Courses and research projects in one list, in the order you've dragged them into. Until you have,
@@ -999,7 +1026,29 @@ class Api:
         if logged:
             self._pending.append(f"Logged {sum(s.minutes for s in logged)} minutes of focus.")
             self._pending_changed = True
-        self._awake.set(run is not None)
+        counting_down = self._check_timer_goal(now)
+        self._awake.set(run is not None or counting_down)
+
+    def _check_timer_goal(self, now: datetime) -> bool:
+        """Pling and notify once when a timer reaches the time spun on the wheel. Returns whether a goal is
+        still being counted down to (so the Mac keeps the app awake for the pling)."""
+        timer = self._store.get_timer()
+        if timer is None or not timer.goal_minutes:
+            return False
+        goal_at = timer.started_at + timedelta(minutes=timer.goal_minutes)
+        if now < goal_at:
+            return True
+        # Only soon after the goal, so reopening the app much later doesn't pling for one long past.
+        if self._goal_announced != timer.started_at and now - goal_at < timedelta(minutes=5):
+            self._goal_announced = timer.started_at
+            title = "Time's up"
+            body = f"You studied the {format_minutes(timer.goal_minutes)} you spun. Keep going, or stop and save."
+            self._pending.append(f"{title}. {body}")
+            if self._setting("sound"):
+                self._play(sound.FOCUS_DONE)
+            if self._setting("notifications"):
+                self._notify(title, body)
+        return False
 
     def _phase_key(self, run: PomodoroRun | None, now: datetime) -> tuple[str, int, bool] | None:
         """What the Pomodoro is doing, to notice when it changes: (phase, blocks done, focus time up)."""
@@ -1268,8 +1317,10 @@ class Api:
         self._store.delete_session(session_id)
 
     @action
-    def timer_start(self, course_id: int | None, topic_id: int | None = None, project_id: int | None = None) -> None:
-        self._store.start_timer(course_id, topic_id, project_id=project_id)
+    def timer_start(self, course_id: int | None, topic_id: int | None = None, project_id: int | None = None,
+                    goal_minutes: int | None = None) -> None:
+        """Start the plain timer; with goal_minutes (spun on the wheel) it counts down to that first."""
+        self._store.start_timer(course_id, topic_id, project_id=project_id, goal_minutes=goal_minutes)
 
     @action
     def timer_stop(self) -> dict:
@@ -2142,6 +2193,131 @@ class Api:
     @action
     def move_items(self, kind: str, ids: list[int]) -> None:
         self._store.move_items(kind, [int(i) for i in ids])
+
+    # ---------- daily to-do lists ----------
+
+    @staticmethod
+    def _day_name(d: date, today: date) -> str:
+        """'Today', 'Tomorrow', 'Yesterday', else 'Tue 10 Nov'."""
+        return {0: "Today", 1: "Tomorrow", -1: "Yesterday"}.get((d - today).days, _day(d))
+
+    @staticmethod
+    def _todo_json(t: Todo) -> dict:
+        return {"id": t.id, "text": t.text, "done": t.done,
+                "done_label": f"{t.done_at:%H:%M}" if t.done_at else ""}
+
+    @action
+    def todos(self, day: str | None = None) -> dict:
+        """One day's to-do list (today unless another day is given), with the week around it for moving
+        between days, and, on today's list, how many unfinished to-dos earlier days left behind."""
+        today = datetime.now().date()
+        try:
+            d = date.fromisoformat(day) if day else today
+        except ValueError:
+            raise UserError(f"{day!r} isn't a date.") from None
+        items = self._store.list_todos(day=d)
+        week_first = week_range(d, self._config().week_start)[0].date()
+        week = self._store.list_todos(since=week_first, until=week_first + timedelta(days=7))
+        behind = self._store.open_todos_before(today) if d == today else []
+        return {
+            "day": d.isoformat(), "name": self._day_name(d, today), "long_label": f"{d:%A} {d.day} {d:%B}",
+            "is_today": d == today, "is_past": d < today,
+            "prev": (d - timedelta(days=1)).isoformat(), "next": (d + timedelta(days=1)).isoformat(),
+            "today": today.isoformat(),
+            "items": [self._todo_json(t) for t in items],
+            "done": sum(1 for t in items if t.done), "total": len(items),
+            "week": [{"day": x.isoformat(), "label": f"{x:%a}", "date": x.day, "selected": x == d, "today": x == today,
+                      "done": sum(1 for t in week if t.day == x and t.done), "total": sum(1 for t in week if t.day == x)}
+                     for x in (week_first + timedelta(days=i) for i in range(7))],
+            "left_behind": len(behind),
+        }
+
+    @action
+    def todo_today(self) -> dict:
+        """Today's progress, for the sidebar."""
+        items = self._store.list_todos(day=datetime.now().date())
+        return {"done": sum(1 for t in items if t.done), "total": len(items)}
+
+    @action
+    def add_todo(self, day: str, text: str) -> dict:
+        """Add to a day's list. Several lines (pasted in) become several to-dos."""
+        d = date.fromisoformat(day)
+        lines = [line.strip().lstrip("-*• ").strip() for line in str(text or "").splitlines()]
+        lines = [line for line in lines if line]
+        if not lines:
+            raise UserError("Write what you want to get done.")
+        return {"ids": [self._store.add_todo(d, line).id for line in lines]}
+
+    @action
+    def edit_todo(self, todo_id: int, text: str) -> None:
+        self._store.update_todo(todo_id, str(text or ""))
+
+    @action
+    def toggle_todo(self, todo_id: int) -> dict:
+        """Tick a to-do off (or back on). Says whether that finished the whole day's list, for the confetti."""
+        t = self._store.toggle_todo(todo_id)
+        items = self._store.list_todos(day=t.day)
+        return {"done": t.done, "all_done": t.done and all(x.done for x in items),
+                "left": sum(1 for x in items if not x.done)}
+
+    @action
+    def delete_todo(self, todo_id: int) -> None:
+        self._store.delete_todo(todo_id)
+
+    @action
+    def move_todo(self, todo_id: int, day: str) -> dict:
+        d = date.fromisoformat(day)
+        self._store.move_todos([todo_id], d)
+        name = self._day_name(d, datetime.now().date())
+        return {"message": f"Moved to {name.lower() if name in ('Today', 'Tomorrow', 'Yesterday') else name}."}
+
+    @action
+    def bring_todos_forward(self) -> dict:
+        """Move every unfinished to-do from earlier days onto today's list."""
+        today = datetime.now().date()
+        moved = self._store.move_todos([t.id for t in self._store.open_todos_before(today)], today)  # type: ignore[misc]
+        return {"message": f"Moved {moved} unfinished to-do{'s' if moved != 1 else ''} to today."}
+
+    # ---------- statistics ----------
+
+    @action
+    def statistics(self) -> dict:
+        now = datetime.now()
+        today = now.date()
+        week_start = self._config().week_start
+        sessions = self._store.list_sessions() + self._store.list_project_sessions()
+        h = study_habits(sessions, self._store.list_todos(), today, week_start)
+        courses = {c.id: c for c in self._store.list_courses()}
+        subjects = [{"label": f"{courses[cid].code} {courses[cid].name}".strip(), "code": courses[cid].code,
+                     "color": courses[cid].color, "minutes": m, "length": format_minutes(m)}
+                    for cid, m in h.by_course if cid in courses]
+        if h.research_minutes:
+            subjects.append({"label": "Research projects", "code": "", "color": "", "research": True,
+                             "minutes": h.research_minutes, "length": format_minutes(h.research_minutes)})
+        weekday_names = [(date(2026, 11, 2) + timedelta(days=(week_start + i) % 7)) for i in range(7)]  # a Monday
+        change = None
+        if h.last_week_so_far:
+            change = round(100 * (h.this_week - h.last_week_so_far) / h.last_week_so_far)
+        return {
+            "empty": not sessions,
+            "total": format_minutes(h.total_minutes), "total_minutes": h.total_minutes,
+            "sessions": h.sessions, "study_days": h.study_days,
+            "this_week": format_minutes(h.this_week), "this_week_minutes": h.this_week,
+            "last_week_so_far": format_minutes(h.last_week_so_far), "week_change": change,
+            "current_streak": h.current_streak, "longest_streak": h.longest_streak,
+            "studied_today": any(s.started_at.date() == today for s in sessions),
+            "average_session": format_minutes(h.average_session), "longest_session": format_minutes(h.longest_session),
+            "weeks": [{"label": f"{d.day} {d:%b}", "minutes": m, "length": format_minutes(m),
+                       "current": i == len(h.weeks) - 1} for i, (d, m) in enumerate(h.weeks)],
+            "days": [{"day": d.isoformat(), "label": f"{d:%a} {d.day} {d:%b}", "minutes": m, "length": format_minutes(m),
+                      "today": d == today} for d, m in h.days],
+            "weekdays": [{"label": f"{d:%a}", "long": f"{d:%A}", "minutes": m, "length": format_minutes(m)}
+                         for d, m in zip(weekday_names, h.by_weekday)],
+            "hours": [{"hour": i, "minutes": m, "length": format_minutes(m)} for i, m in enumerate(h.by_hour)],
+            "subjects": subjects,
+            "todos": {"done_week": h.todos_done_week, "week": h.todos_week,
+                      "done_month": h.todos_done_month, "month": h.todos_month},
+        }
 
     # notes: saved while you type, so these answer with the note instead of making the page redraw
 

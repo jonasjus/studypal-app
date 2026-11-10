@@ -28,6 +28,7 @@ from .models import (
     ExamFile,
     ExamQuestion,
     LINK_CATEGORIES,
+    Todo,
     PROJECT_STATUSES,
     READING_STATUSES,
     Priority,
@@ -60,7 +61,7 @@ class StorageError(Exception):
 PROJECT_TABLES = ("project", "project_note", "project_entry", "project_link", "project_source", "project_task",
                   "project_session")
 # The parts of a project that keep an order you can change by dragging.
-ORDERED = {"link": "project_link", "source": "project_source", "task": "project_task"}
+ORDERED = {"link": "project_link", "source": "project_source", "task": "project_task", "todo": "todo"}
 
 
 def _sync_columns(table: str) -> str:
@@ -586,6 +587,22 @@ MIGRATIONS: list[str] = [
     );
     create index course_note_course on course_note(course_id);
     """ + _sync_columns("course_note"),
+    # StudyPal only (the timer is local): how long you mean to study, from spinning the wheel.
+    """
+    alter table active_timer add column goal_minutes integer;
+    """,
+    # Daily to-do lists: each item belongs to a day.
+    """
+    create table todo (
+        id integer primary key,
+        day text not null,
+        text text not null,
+        done integer not null default 0,
+        done_at text,
+        position integer not null default 0
+    );
+    create index todo_day on todo(day);
+    """ + _sync_columns("todo"),
 ]
 
 
@@ -1117,19 +1134,23 @@ class Store:
     # ---------- the running timer ----------
 
     def start_timer(self, course_id: int | None, topic_id: int | None = None, now: datetime | None = None,
-                    project_id: int | None = None) -> ActiveTimer:
-        """Time a course (with an optional topic) or, with project_id instead, a research project."""
+                    project_id: int | None = None, goal_minutes: int | None = None) -> ActiveTimer:
+        """Time a course (with an optional topic) or, with project_id instead, a research project. With a
+        goal, the clock counts down to it; the timer still runs on past it until you stop."""
         if self.get_timer() is not None:
             raise StorageError("A study timer is already running. Stop it first.")
         if self.get_pomodoro() is not None:
             raise StorageError("A Pomodoro is running. Stop it before starting a plain timer.")
         self._check_target(course_id, project_id)
+        if goal_minutes is not None and not 1 <= goal_minutes <= 24 * 60:
+            raise StorageError("The study goal has to be between a minute and a day.")
         timer = ActiveTimer(course_id=course_id, topic_id=topic_id if course_id else None, project_id=project_id,
-                            started_at=(now or datetime.now()).replace(microsecond=0))
+                            started_at=(now or datetime.now()).replace(microsecond=0), goal_minutes=goal_minutes)
         with self._tx() as c:
             c.execute(
-                "insert into active_timer (id, course_id, project_id, topic_id, started_at) values (1, ?, ?, ?, ?)",
-                (course_id, project_id, timer.topic_id, timer.started_at.isoformat(timespec="seconds")),
+                "insert into active_timer (id, course_id, project_id, topic_id, started_at, goal_minutes)"
+                " values (1, ?, ?, ?, ?, ?)",
+                (course_id, project_id, timer.topic_id, timer.started_at.isoformat(timespec="seconds"), goal_minutes),
             )
         return timer
 
@@ -1143,7 +1164,7 @@ class Store:
         if not r:
             return None
         return ActiveTimer(course_id=r["course_id"], topic_id=r["topic_id"], started_at=_dt(r["started_at"]),
-                           project_id=r["project_id"])
+                           project_id=r["project_id"], goal_minutes=r["goal_minutes"])
 
     def stop_timer(self, now: datetime | None = None, note: str = "") -> Session | None:
         """Stop the running timer and log it. Returns None (and logs nothing) if it ran under a minute."""
@@ -2125,6 +2146,81 @@ class Store:
         with self._tx() as c:
             c.execute("insert into setting (key, value) values (?, ?)"
                       " on conflict (key) do update set value = excluded.value", (key, value))
+
+    # ---------- daily to-do lists ----------
+
+    @staticmethod
+    def _todo(r: sqlite3.Row) -> Todo:
+        return Todo(id=r["id"], day=_d(r["day"]), text=r["text"], done=bool(r["done"]),  # type: ignore[arg-type]
+                    done_at=_dt(r["done_at"]), position=r["position"])
+
+    def add_todo(self, day: date, text: str) -> Todo:
+        text = text.strip()
+        if not text:
+            raise StorageError("Write what you want to get done.")
+        with self._tx() as c:
+            position = c.execute("select coalesce(max(position), 0) + 1 from todo where day = ?", (_iso(day),)).fetchone()[0]
+            todo_id = c.execute("insert into todo (day, text, done, position) values (?, ?, 0, ?)",
+                                (_iso(day), text, position)).lastrowid
+        return self.get_todo(todo_id)  # type: ignore[arg-type,return-value]
+
+    def update_todo(self, todo_id: int, text: str) -> Todo:
+        text = text.strip()
+        if not text:
+            raise StorageError("Write what you want to get done.")
+        with self._tx() as c:
+            if not c.execute("update todo set text = ? where id = ?", (text, todo_id)).rowcount:
+                raise StorageError("That to-do no longer exists.")
+        return self.get_todo(todo_id)  # type: ignore[return-value]
+
+    def toggle_todo(self, todo_id: int, now: datetime | None = None) -> Todo:
+        t = self.get_todo(todo_id)
+        if t is None:
+            raise StorageError("That to-do no longer exists.")
+        t.done = not t.done
+        t.done_at = (now or datetime.now()).replace(second=0, microsecond=0) if t.done else None
+        with self._tx() as c:
+            c.execute("update todo set done = ?, done_at = ? where id = ?", (int(t.done), _iso(t.done_at), t.id))
+        return t
+
+    def delete_todo(self, todo_id: int) -> None:
+        with self._tx() as c:
+            c.execute("delete from todo where id = ?", (todo_id,))
+
+    def get_todo(self, todo_id: int) -> Todo | None:
+        r = self.conn.execute("select * from todo where id = ?", (todo_id,)).fetchone()
+        return self._todo(r) if r else None
+
+    def list_todos(self, day: date | None = None, since: date | None = None, until: date | None = None) -> list[Todo]:
+        """One day's list in its order, or (without a day) every to-do from `since` up to before `until`."""
+        sql, args = "select * from todo where 1 = 1", []  # type: tuple[str, list[object]]
+        if day is not None:
+            sql += " and day = ?"
+            args.append(_iso(day))
+        if since is not None:
+            sql += " and day >= ?"
+            args.append(_iso(since))
+        if until is not None:
+            sql += " and day < ?"
+            args.append(_iso(until))
+        rows = self.conn.execute(sql + " order by day, position, uid", args)
+        return [self._todo(r) for r in rows]
+
+    def open_todos_before(self, day: date) -> list[Todo]:
+        """Unfinished to-dos from days before `day`: what's been left behind."""
+        rows = self.conn.execute("select * from todo where day < ? and done = 0 order by day, position, uid", (_iso(day),))
+        return [self._todo(r) for r in rows]
+
+    def move_todos(self, todo_ids: list[int], day: date) -> int:
+        """Move to-dos to the end of `day`'s list, in the order given. Returns how many moved."""
+        with self._tx() as c:
+            position = c.execute("select coalesce(max(position), 0) from todo where day = ?", (_iso(day),)).fetchone()[0]
+            moved = 0
+            for todo_id in todo_ids:
+                position += 1
+                moved += c.execute("update todo set day = ?, position = ? where id = ?",
+                                   (_iso(day), position, todo_id)).rowcount
+        return moved
 
     # ---------- notifications already sent ----------
 

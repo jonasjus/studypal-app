@@ -285,6 +285,7 @@ function renderOverview(d) {
       ${done}
     </section>
     <aside class="stack">
+      ${plantPanel(d.overall)}
       <div class="panel">
         <div class="section-head"><h2>Deadlines</h2><button class="btn small ghost" data-act="add-deadline">+ Add</button></div>
         ${d.deadlines.length ? `<ul class="list">${d.deadlines.map((x) => deadlineRow(x)).join("")}</ul>` : '<p class="empty-small">Nothing due. Nice.</p>'}
@@ -594,8 +595,12 @@ function renderRunning() {
   if (!r) { el.innerHTML = ""; return; }
   const what = `<div class="what"><b>${r.project_id ? `${ICONS.research} ` : ""}${esc(r.label || r.course_code)}${r.topic ? ` · ${esc(r.topic)}` : ""}</b>`;
   if (r.kind === "timer") {
-    el.innerHTML = `<div class="running"><span class="pulse"></span><span class="clock" id="clock"></span>
-      ${what}<small>Studying. Stop when you're done and the time is saved.</small></div>
+    const goal = r.goal_seconds, reached = goalReached(r);
+    const sub = !goal ? "Studying. Stop when you're done and the time is saved."
+      : reached ? `Time's up! You did the ${Math.round(goal / 60)} minutes you spun. Keep going, or stop and save.`
+      : `Spun ${Math.round(goal / 60)} minutes. Keep at it until the clock reaches zero.`;
+    el.innerHTML = `<div class="running${reached ? " overtime" : ""}"><span class="pulse"></span><span class="clock" id="clock"></span>
+      ${what}<small>${esc(sub)}</small></div>
       <div class="actions"><button class="btn ghost" data-act="timer-cancel">Discard</button>
       <button class="btn primary" data-act="timer-stop">Stop and save</button></div></div>`;
   } else {
@@ -619,11 +624,20 @@ function renderRunning() {
   updateClock();
 }
 
+function goalReached(r) {
+  return !!r.goal_seconds && r.elapsed_seconds + (Date.now() - state.runningAt) / 1000 >= r.goal_seconds;
+}
+
 function updateClock() {
   const r = state.running, el = $("#clock");
   if (!r || !el) return;
   const passed = (Date.now() - state.runningAt) / 1000;
-  if (r.kind === "timer") {
+  if (r.kind === "timer" && r.goal_seconds) {
+    const left = r.goal_seconds - (r.elapsed_seconds + passed);
+    el.textContent = left > 0 ? clock(left) : `+${clock(-left)}`;
+    // Reaching the goal changes the words and colour of the bar, so draw it again once.
+    if (goalReached(r) !== el.closest(".running").classList.contains("overtime")) renderRunning();
+  } else if (r.kind === "timer") {
     el.textContent = clock(r.elapsed_seconds + passed);
   } else if (r.phase === "focus" && r.focus_done) {
     el.textContent = `+${clock(r.overtime_seconds + (r.paused ? 0 : passed))}`;
@@ -1078,6 +1092,8 @@ async function loadSidebar() {
     sideItems = { courses: activeSubjects(courses), projects: projects.filter((p) => !p.done) };
   } catch (e) { /* keep what's shown */ }
   renderSidebar();
+  loadBadges();
+  loadTodoToday();
 }
 
 function sideLink({ act, id, color, badge, label, sub, active }) {
@@ -1097,6 +1113,7 @@ function renderSidebar() {
   $("#side-nav").innerHTML = `
     <div class="side-top"><button class="side-item${v.name === "overview" ? " active" : ""}" data-go="overview" title="Overview">
       <span class="side-badge plain">${ICONS.home}</span><span class="side-text"><span class="side-label">Overview</span></span></button></div>
+    ${sideExtras(v)}
     ${head("Subjects", "add-course", "a subject")}
     ${courses.length ? courses.map((c) => sideLink({ act: "open-subject", id: c.id, color: cc(c.color), badge: (c.code || c.name).slice(0, 3),
         label: `${c.code} ${c.name}`.trim(), sub: c.exam_label ? `Exam ${c.exam_label}` : "", active: c.id === courseId })).join("")
@@ -1311,6 +1328,65 @@ async function sessionForm(courseId = null, s = null, projectId = null) {
   if (!cid) $("#modal-root select[name=topic_id]")?.closest(".field")?.style.setProperty("display", "none");
 }
 
+// ---------- the study wheel: spin for how long to study ----------
+
+const WHEEL_MINUTES = [15, 20, 25, 30, 40, 45, 60, 90];
+
+function wheelHtml() {
+  const n = WHEEL_MINUTES.length, step = 360 / n, r = 92;
+  const at = (deg, radius) => {
+    const a = (deg * Math.PI) / 180;
+    return `${(radius * Math.sin(a)).toFixed(2)} ${(-radius * Math.cos(a)).toFixed(2)}`;
+  };
+  const wedges = WHEEL_MINUTES.map((m, i) => {
+    const mid = i * step + step / 2;
+    return `<g class="wedge${i % 2 ? " alt" : ""}">
+      <path d="M0 0 L${at(i * step, r)} A${r} ${r} 0 0 1 ${at((i + 1) * step, r)} Z"/>
+      <text transform="rotate(${mid}) translate(0 -60)" text-anchor="middle" dominant-baseline="middle">${m}</text>
+    </g>`;
+  }).join("");
+  return `<div class="wheel">
+      <div class="wheel-stage">
+        <svg class="wheel-pointer" viewBox="0 0 20 16" aria-hidden="true"><path d="M0 0 H20 L10 16 Z"/></svg>
+        <svg class="wheel-disc" viewBox="-100 -100 200 200" role="img" aria-label="A wheel of study times from ${WHEEL_MINUTES[0]} to ${WHEEL_MINUTES[n - 1]} minutes">
+          <circle r="${r + 4}" class="wheel-rim"/>${wedges}<circle r="14" class="wheel-hub"/>
+        </svg>
+      </div>
+      <div class="wheel-side">
+        <button type="button" class="btn primary" data-spin>Spin</button>
+        <p class="wheel-result" aria-live="polite">Spin to find out how long you're studying for.</p>
+        <input type="hidden" name="goal" value="">
+      </div>
+    </div>`;
+}
+
+// Spins to a random time, then puts it in the form's hidden "goal" field.
+function hookWheel(form) {
+  const disc = $(".wheel-disc", form), button = $("[data-spin]", form);
+  const result = $(".wheel-result", form), goal = $("input[name=goal]", form);
+  const step = 360 / WHEEL_MINUTES.length;
+  let turned = 0;
+  button.addEventListener("click", () => {
+    const i = Math.floor(Math.random() * WHEEL_MINUTES.length);
+    // Land the wedge's middle (give or take a little) under the pointer at the top, after a few full turns.
+    const land = 360 - (i * step + step / 2) + (Math.random() - 0.5) * step * 0.7;
+    turned += 360 * 5 + ((land - (turned % 360)) + 360) % 360;
+    goal.value = "";
+    $(".form-error", form).textContent = "";
+    button.disabled = true;
+    result.textContent = "Spinning…";
+    form.querySelector("input[name=mode][value=spin]").checked = true;
+    disc.style.transform = `rotate(${turned}deg)`;
+    disc.addEventListener("transitionend", () => {
+      const m = WHEEL_MINUTES[i];
+      goal.value = m;
+      button.disabled = false;
+      button.textContent = "Spin again";
+      result.innerHTML = `You're studying for <b>${m} minutes</b>.`;
+    }, { once: true });
+  });
+}
+
 async function startForm(courseId = null, topicId = null, projectId = null) {
   if (state.running) { toast("You're already studying. Stop that first."); return; }
   const { courses, options } = await studyTargets();
@@ -1318,7 +1394,7 @@ async function startForm(courseId = null, topicId = null, projectId = null) {
   const settings = await call("get_settings");
   const picked = projectId ? `project:${projectId}` : courseId ? `course:${courseId}` : options[0][0];
   const cid = targetOf(picked).course_id;
-  openForm({
+  const form = openForm({
     title: "Start studying",
     fields: [
       { row: [
@@ -1328,18 +1404,32 @@ async function startForm(courseId = null, topicId = null, projectId = null) {
       { name: "mode", label: "How?", type: "choices", value: state.lastMode || "timer", options: [
         ["timer", "Timer", "Runs until you press stop, then the time is saved."],
         ["pomodoro", "Pomodoro", `${settings.focus_minutes} minutes of focus, then a ${settings.short_break_minutes}-minute break. Each focus block is saved automatically.`],
+        ["spin", "Spin the wheel", "The wheel picks how long you study. The clock counts down, and the time is saved when you stop."],
       ] },
+      { only: ["spin"], name: "wheel", label: "How long?", type: "html", html: wheelHtml() },
     ],
     submit: "Start",
     onSubmit: async (v) => {
+      if (v.mode === "spin" && !v.goal) throw new Error("Spin the wheel first.");
       state.lastMode = v.mode;
       const t = targetOf(v.target);
       const topic = t.course_id && v.topic_id ? Number(v.topic_id) : null;
-      await call(v.mode === "pomodoro" ? "pomo_start" : "timer_start", t.course_id, topic, t.project_id);
+      if (v.mode === "pomodoro") await call("pomo_start", t.course_id, topic, t.project_id);
+      else await call("timer_start", t.course_id, topic, t.project_id, v.mode === "spin" ? Number(v.goal) : null);
     },
-    onChange: linkTargetTopics(courses),
+    onChange: (el, f) => {
+      linkTargetTopics(courses)(el, f);
+      if (el.name === "mode") showWheel(f);
+    },
   });
   if (!cid) $("#modal-root select[name=topic_id]").closest(".field").style.display = "none";
+  showWheel(form);
+  hookWheel(form);
+}
+
+function showWheel(form) {
+  const mode = form.querySelector("input[name=mode]:checked")?.value;
+  form.querySelector("[data-only=spin]").hidden = mode !== "spin";
 }
 
 async function settingsForm() {
@@ -1382,7 +1472,7 @@ async function settingsForm() {
       ...aiFields(g),
     ],
     extra: `<button type="button" class="btn left" data-act="export">Save a backup…</button>`,
-    intro: `<span class="faint" style="font-size:.75rem">Your data is stored in ${esc(where)}</span>`,
+    intro: `<span class="faint" style="font-size:.75rem">StudyPal ${esc(s.version)} · Your data is stored in ${esc(where)}</span>`,
     onSubmit: async (v) => {
       await setTheme(v.theme, true);
       await setType({ font: v.font, size: v.text_size }, true);
@@ -1775,7 +1865,7 @@ document.addEventListener("keydown", (e) => {
     if (document.querySelector(".menu")) closeMenu();
     else if (modalClose) modalClose();
     else if (state.view.name === "reading" || state.view.name === "exams") go({ name: "subject", id: state.view.id });
-    else if (state.view.name === "subject" || state.view.name === "research") go({ name: "overview" });
+    else if (["subject", "research", "todo", "stats"].includes(state.view.name)) go({ name: "overview" });
     else if (state.view.name === "exam") go({ name: "exams", id: state.data.course.id });
     else if (state.view.name === "attempt") go({ name: "exam", id: state.data.exam.id });
     // Taking an exam: Escape does nothing, so it can't be left by accident.

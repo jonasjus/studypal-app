@@ -133,6 +133,42 @@ def test_timer(api: Api) -> None:
     assert api.overview()["running"] is None
 
 
+def test_spun_timer_counts_down_and_plings_once_at_the_goal(api: Api) -> None:
+    cid = add_course(api)
+    api.timer_start(cid, None, None, 30)
+    r = api.running()["running"]
+    assert r["kind"] == "timer" and r["goal_seconds"] == 30 * 60
+    api.tick()
+    assert api.played == [] and api.sent == []  # type: ignore[attr-defined]
+
+    api._store.conn.execute("update active_timer set started_at = ?",
+                            ((datetime.now() - timedelta(minutes=31)).isoformat(timespec="seconds"),))
+    messages = api.tick()["messages"]
+    assert any("Time's up" in m for m in messages)
+    assert api.played == ["focus_done"] and api.sent[0][0] == "Time's up"  # type: ignore[attr-defined]
+    api.tick()
+    assert api.played == ["focus_done"]  # type: ignore[attr-defined]
+    assert api.timer_stop()["message"] == "Logged 31m."  # the time past the goal counts too
+
+
+def test_spun_timer_long_past_its_goal_doesnt_pling(api: Api) -> None:
+    """Reopening the app hours later shouldn't pling for a goal reached long ago."""
+    cid = add_course(api)
+    api.timer_start(cid, None, None, 15)
+    api._store.conn.execute("update active_timer set started_at = ?",
+                            ((datetime.now() - timedelta(hours=3)).isoformat(timespec="seconds"),))
+    api.tick()
+    assert api.played == []  # type: ignore[attr-defined]
+
+
+def test_plain_timer_has_no_goal(api: Api) -> None:
+    cid = add_course(api)
+    api.timer_start(cid, None)
+    assert api.running()["running"]["goal_seconds"] is None
+    api.timer_cancel()
+    assert "between a minute and a day" in api.timer_start(cid, None, None, -5)["error"]
+
+
 def test_running_says_when_nothing_is_running(api: Api) -> None:
     """Pages without the timer in their data ask with running(); a stopped timer must come back as None,
     not as @action's {"ok": True} (which the page would draw as a timer still going)."""
@@ -284,6 +320,22 @@ def test_overall_progress(api: Api) -> None:
     assert o["is_behind"] and o["mood_words"] == "behind by 25%"
 
 
+def test_the_plant_follows_the_overall_pace(api: Api) -> None:
+    cid = add_course(api, "A1", start=-10, exam=10)  # half the time used
+    api.add_topics(cid, "One\nTwo\nThree\nFour")
+    topics = api.subject(cid)["topics"]
+    assert api.overview()["overall"]["plant"]["health"] == "withered"  # nothing done at the halfway point
+    for t in topics[:2]:
+        api.set_topic_status(t["id"], "reviewed")
+    assert api.overview()["overall"]["plant"]["health"] == "healthy"
+    api.set_topic_status(topics[2]["id"], "confident")
+    plant = api.overview()["overall"]["plant"]
+    assert plant["health"] == "blooming" and plant["words"]
+    later = add_course(api, "B1", start=5, exam=30)
+    api.add_topics(later, "Five")
+    assert api.overview()["overall"]["plant"]["leaves"] >= 1
+
+
 def test_a_whole_source_can_belong_to_a_topic(api: Api) -> None:
     cid = add_course(api)
     api.add_topics(cid, "Kernels\nTrees")
@@ -370,3 +422,31 @@ def test_the_pling_is_a_short_fading_sound() -> None:
     one, two = sound.samples(sound.FOCUS_DONE), sound.samples(sound.BREAK_OVER)
     assert 0.2 < max(abs(x) for x in one) < 0.6 and len(two) > len(one)
     assert max(abs(x) for x in one[-500:]) < 0.01  # faded out by the end
+
+
+def test_badges_are_announced_once(api: Api) -> None:
+    b = api.badges()
+    assert b["earned"] == 0 and b["total"] == len(b["items"]) and b["new"] == []
+    cid = add_course(api)
+    api.timer_start(cid)
+    api._store.conn.execute("update active_timer set started_at = ?",
+                            ((datetime.now() - timedelta(minutes=95)).replace(microsecond=0).isoformat(),))
+    api._store.conn.commit()
+    api.timer_stop()
+    b = api.badges()
+    assert {"first_session", "deep_focus"} <= set(b["new"])
+    earned = next(i for i in b["items"] if i["id"] == "first_session")
+    assert earned["earned"] and earned["earned_label"]
+    api.badges_seen(b["new"])
+    assert api.badges()["new"] == []
+
+
+def test_statistics(api: Api) -> None:
+    assert api.statistics()["empty"]
+    cid = add_course(api)
+    api.save_session({"course_id": cid, "hours": 1, "minutes": 30,
+                      "started_at": datetime.now().replace(hour=9, minute=0).isoformat(timespec="minutes")})
+    st = api.statistics()
+    assert not st["empty"] and st["total"] == "1h 30m" and st["current_streak"] == 1 and st["studied_today"]
+    assert st["subjects"][0]["code"] == "ML101" and len(st["weekdays"]) == 7 and len(st["hours"]) == 24
+    assert st["hours"][9]["minutes"] == 60 and st["weeks"][-1]["current"]

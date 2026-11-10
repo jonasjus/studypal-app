@@ -82,6 +82,11 @@ def to_markdown(store: Store, now: datetime | None = None) -> str:
         out += ["## Other deadlines", ""]
         out += _table(["Due", "Deadline", "Type", "Done"],
                       [[format_datetime(d.due_at), d.title, d.kind.value, "yes" if d.done else ""] for d in standalone])
+    todos = store.list_todos()
+    if todos:
+        out += ["## To-do lists", ""]
+        for day in sorted({t.day for t in todos}, reverse=True):
+            out += [f"**{format_date(day)}**", ""] + [f"- [{'x' if t.done else ' '}] {t.text}" for t in todos if t.day == day] + [""]
     return "\n".join(out).rstrip() + "\n"
 
 

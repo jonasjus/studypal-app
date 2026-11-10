@@ -240,6 +240,24 @@ def seed(store: Store, now: datetime | None = None) -> None:
                                          created_at=now - timedelta(days=ago)))
 
     seed_project(store, now)
+    seed_todos(store, now)
+
+
+# Daily to-do lists: (days from today, text, done). Yesterday left one unfinished, to show moving it forward.
+TODOS = [
+    (-2, "Finish problem set 3", True), (-2, "Read chapter 6 of the ML book", True),
+    (-1, "Revise batch vs stream processing", True), (-1, "Email the TA about the pipeline report", False),
+    (0, "Two Pomodoros on kernel methods", True), (0, "Past exam 2022, question 1–3", False),
+    (0, "Go through weak spot: bias–variance", False), (0, "Pack bag for the library", True),
+    (1, "Start the pipeline project report", False),
+]
+
+
+def seed_todos(store: Store, now: datetime) -> None:
+    for days, text, done in TODOS:
+        todo = store.add_todo(now.date() + timedelta(days=days), text)
+        if done:
+            store.toggle_todo(todo.id, now - timedelta(days=max(0, -days), hours=1))  # type: ignore[arg-type]
 
 
 def seed_project(store: Store, now: datetime) -> None:

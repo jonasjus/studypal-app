@@ -11,8 +11,17 @@ compared with how much time is left before the exam, and helps you practise what
   the material is done with how much of the time has passed, so you see when you're falling behind.
 - **Topics and weak spots.** Track each topic from "Not started" to "Confident", and note the
   things you keep getting wrong.
+- **A study plant** on the overview that flowers when you're ahead of schedule and wilts the
+  further behind you fall. It grows as you finish topics.
+- **Badges** to collect by studying: hours studied, streaks of days in a row, early mornings,
+  late nights, long sessions and more. Time you logged before badges existed counts too.
+- **Daily to-do lists**, with the week ahead to plan in, unfinished to-dos carried forward when you
+  want, and confetti for every one you tick off.
+- **Statistics** on your study habits: totals, streaks, the last 12 weeks, a calendar of every day,
+  and when in the day and week you study, and what on.
 - **Deadlines** for assignments and exams, with notifications while the app is open.
-- **Study time** with a timer or a Pomodoro, and a weekly chart of where your time went.
+- **Study time** with a timer, a Pomodoro, or a wheel you spin to decide how long to study, and a
+  weekly chart of where your time went.
 - **Reading lists** per subject, by book or by topic, with chapters you tick off.
 - **Exams.** Add past exam papers (PDFs or photos) and StudyPal reads them into questions,
   matched with their solutions. You can then:

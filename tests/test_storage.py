@@ -184,6 +184,15 @@ def test_timer_survives_closing_the_app_and_logs_on_stop(db_file, store: Store, 
         assert reopened.total_minutes() == 50
 
 
+def test_timer_goal_survives_closing_the_app(db_file, store: Store, ml: Course) -> None:
+    store.start_timer(ml.id, goal_minutes=45)
+    with Store(db_file) as reopened:
+        assert reopened.get_timer().goal_minutes == 45
+    store.cancel_timer()
+    store.start_timer(ml.id)
+    assert store.get_timer().goal_minutes is None
+
+
 def test_timer_under_a_minute_logs_nothing(store: Store, ml: Course) -> None:
     start = datetime(2026, 11, 5, 18, 0)
     store.start_timer(ml.id, now=start)

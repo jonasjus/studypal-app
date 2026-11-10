@@ -32,6 +32,7 @@ FIELDS: dict[str, list[str]] = {
     "project_source": ["title", "authors", "year", "link", "status", "annotation", "position"],
     "project_task": ["text", "done", "done_at", "position"],
     "project_session": ["started_at", "minutes", "note"],
+    "todo": ["day", "text", "done", "done_at", "position"],
 }
 
 
