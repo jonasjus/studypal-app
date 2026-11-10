@@ -1,3 +1,3 @@
 """StudyPal: the study tracker as a regular desktop app."""
 
-__version__ = "1.0.1"  # major.minor.patch: the patch goes up by one with every commit
+__version__ = "1.0.2"  # major.minor.patch: the patch goes up by one with every commit

@@ -217,6 +217,39 @@ function weakRow(w, { showCourse = true } = {}) {
   </li>`;
 }
 
+// The overview shows only the nearest deadlines (overdue ones first), with the rest a click away.
+const NEAREST_DEADLINES = 3;
+
+function overviewDeadlines(deadlines) {
+  if (!deadlines.length) return '<p class="empty-small">Nothing due. Nice.</p>';
+  const shown = state.allDeadlines ? deadlines : deadlines.slice(0, NEAREST_DEADLINES);
+  const more = deadlines.length - NEAREST_DEADLINES;
+  const toggle = more > 0 ? `<button class="link panel-more" data-act="toggle-all-deadlines">${state.allDeadlines ? "Show only the nearest" : `Show ${more} more`}</button>` : "";
+  return `<ul class="list">${shown.map((x) => deadlineRow(x)).join("")}</ul>${toggle}`;
+}
+
+// The overview's weak spots: how many are open in each subject (the list itself is on the subject's page).
+function weakCounts(d) {
+  const courses = new Map([...d.courses, ...d.done_courses].map((c) => [c.id, c]));
+  const counts = new Map();
+  for (const w of d.weak_spots) {
+    const n = counts.get(w.course_id) || { open: 0, high: 0 };
+    n.open += 1;
+    if (w.priority === "high") n.high += 1;
+    counts.set(w.course_id, n);
+  }
+  const rows = [...counts].filter(([id]) => courses.has(id)).sort((a, b) => b[1].high - a[1].high || b[1].open - a[1].open)
+    .map(([id, n]) => {
+      const c = courses.get(id);
+      return `<li class="row weak-count" data-act="open-subject" data-id="${id}" tabindex="0" title="See ${esc(c.code)}'s weak spots">
+        <span class="side-badge" style="background:${esc(cc(c.color))}">${esc((c.code || c.name).slice(0, 3))}</span>
+        <div class="grow"><div class="title">${esc(`${c.code} ${c.name}`.trim())}</div></div>
+        ${n.high ? `<span class="tag high">${n.high} high</span>` : ""}
+        <span class="weak-n" aria-label="${n.open} open weak spot${n.open !== 1 ? "s" : ""}">${n.open}</span></li>`;
+    }).join("");
+  return `<ul class="list">${rows}</ul>`;
+}
+
 // Study time per day, with research time stacked on top of course time in its own colour.
 function weekChart(d) {
   const max = Math.max(60, ...d.week.map((x) => x.minutes));
@@ -288,11 +321,11 @@ function renderOverview(d) {
       ${plantPanel(d.overall)}
       <div class="panel">
         <div class="section-head"><h2>Deadlines</h2><button class="btn small ghost" data-act="add-deadline">+ Add</button></div>
-        ${d.deadlines.length ? `<ul class="list">${d.deadlines.map((x) => deadlineRow(x)).join("")}</ul>` : '<p class="empty-small">Nothing due. Nice.</p>'}
+        ${overviewDeadlines(d.deadlines)}
       </div>
       <div class="panel">
         <div class="section-head"><h2>Weak spots</h2><button class="btn small ghost" data-act="add-weak">+ Add</button></div>
-        ${d.weak_spots.length ? `<ul class="list">${d.weak_spots.map((x) => weakRow(x)).join("")}</ul>` : '<p class="empty-small">Things you find hard go here, so you remember to come back to them.</p>'}
+        ${d.weak_spots.length ? weakCounts(d) : '<p class="empty-small">Things you find hard go here, so you remember to come back to them.</p>'}
       </div>
       ${weekChart(d)}
     </aside>
@@ -1687,6 +1720,7 @@ const actions = {
   "add-weak": (el) => weakForm(el.dataset.course ? Number(el.dataset.course) : null),
   "edit-weak": (el) => weakForm(null, currentWeak(el.dataset.id)),
   "toggle-weak": (el) => act("toggle_weak", Number(el.dataset.id)),
+  "toggle-all-deadlines": () => { state.allDeadlines = !state.allDeadlines; renderView(); },
   "delete-weak": async (el) => { if (await confirmBox("Delete weak spot?", currentWeak(el.dataset.id).description)) act("delete_weak", Number(el.dataset.id)); },
 
   "add-deadline": (el) => deadlineForm(el.dataset.course ? Number(el.dataset.course) : null),
@@ -1870,7 +1904,7 @@ document.addEventListener("keydown", (e) => {
     else if (state.view.name === "attempt") go({ name: "exam", id: state.data.exam.id });
     // Taking an exam: Escape does nothing, so it can't be left by accident.
   }
-  if (e.key === "Enter" && e.target.matches?.(".card, .exam-card")) actions[e.target.dataset.act](e.target);
+  if (e.key === "Enter" && e.target.matches?.(".card, .exam-card, .weak-count")) actions[e.target.dataset.act](e.target);
 });
 
 // ---------- themes ----------
