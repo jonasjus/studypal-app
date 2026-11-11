@@ -128,6 +128,7 @@ const iconBtn = (icon, act, attrs = "", title = "") =>
 const state = {
   view: { name: "overview" },
   data: null,          // what the current view was drawn from
+  expanded: new Set(), // side lists showing all their rows, not just the first few (see shortList)
   running: null,       // the timer or Pomodoro, as of `runningAt`
   runningAt: 0,
   phaseEnded: false,   // the Pomodoro countdown reached zero and we've asked Python to catch up
@@ -217,15 +218,15 @@ function weakRow(w, { showCourse = true } = {}) {
   </li>`;
 }
 
-// The overview shows only the nearest deadlines (overdue ones first), with the rest a click away.
-const NEAREST_DEADLINES = 3;
+// The lists at the side (deadlines, weak spots, study time) show their first few rows, with a button to
+// show the rest. `name` keeps each list's choice while the app is open.
+const SHORT_LIST = 3;
 
-function overviewDeadlines(deadlines) {
-  if (!deadlines.length) return '<p class="empty-small">Nothing due. Nice.</p>';
-  const shown = state.allDeadlines ? deadlines : deadlines.slice(0, NEAREST_DEADLINES);
-  const more = deadlines.length - NEAREST_DEADLINES;
-  const toggle = more > 0 ? `<button class="link panel-more" data-act="toggle-all-deadlines">${state.allDeadlines ? "Show only the nearest" : `Show ${more} more`}</button>` : "";
-  return `<ul class="list">${shown.map((x) => deadlineRow(x)).join("")}</ul>${toggle}`;
+function shortList(name, rows, empty = "") {
+  if (!rows.length) return empty;
+  const all = state.expanded.has(name), more = rows.length - SHORT_LIST;
+  const toggle = more > 0 ? `<button class="link panel-more" data-act="toggle-list" data-list="${name}" aria-expanded="${all}">${all ? "Show fewer" : `Show all ${rows.length}`}</button>` : "";
+  return `<ul class="list">${(all ? rows : rows.slice(0, SHORT_LIST)).join("")}</ul>${toggle}`;
 }
 
 // The overview's weak spots: how many are open in each subject (the list itself is on the subject's page).
@@ -246,8 +247,8 @@ function weakCounts(d) {
         <div class="grow"><div class="title">${esc(`${c.code} ${c.name}`.trim())}</div></div>
         ${n.high ? `<span class="tag high">${n.high} high</span>` : ""}
         <span class="weak-n" aria-label="${n.open} open weak spot${n.open !== 1 ? "s" : ""}">${n.open}</span></li>`;
-    }).join("");
-  return `<ul class="list">${rows}</ul>`;
+    });
+  return shortList("overview-weak", rows);
 }
 
 // Study time per day, with research time stacked on top of course time in its own colour.
@@ -321,7 +322,7 @@ function renderOverview(d) {
       ${plantPanel(d.overall)}
       <div class="panel">
         <div class="section-head"><h2>Deadlines</h2><button class="btn small ghost" data-act="add-deadline">+ Add</button></div>
-        ${overviewDeadlines(d.deadlines)}
+        ${shortList("overview-deadlines", d.deadlines.map((x) => deadlineRow(x)), '<p class="empty-small">Nothing due. Nice.</p>')}
       </div>
       <div class="panel">
         <div class="section-head"><h2>Weak spots</h2><button class="btn small ghost" data-act="add-weak">+ Add</button></div>
@@ -376,7 +377,7 @@ function renderSubject(d) {
         <div class="sub">${esc([s.topic, s.note].filter(Boolean).join(": ") || "—")}</div></div>
       <span class="when">${esc(s.length)}</span>
       <span class="row-actions">${iconBtn("edit", "edit-session", `data-id="${s.id}"`, "Edit")}${iconBtn("trash", "delete-session", `data-id="${s.id}"`, "Delete")}</span>
-    </li>`).join("");
+    </li>`);
   const readingLabel = d.reading.required ? `Reading list ${d.reading.read}/${d.reading.required}` : "Reading list";
   return `<div class="subject-head" style="--course:${esc(cc(c.color))}">
     <div class="crumbs"><button class="btn small ghost" data-go="overview">${ICONS.back} All subjects</button></div>
@@ -414,15 +415,15 @@ function renderSubject(d) {
     <aside class="stack">
       <div class="panel">
         <div class="section-head"><h2>Weak spots</h2><button class="btn small ghost" data-act="add-weak" data-course="${c.id}">+ Add</button></div>
-        ${d.weak_spots.length ? `<ul class="list">${d.weak_spots.map((x) => weakRow(x, { showCourse: false })).join("")}</ul>` : '<p class="empty-small">None noted.</p>'}
+        ${shortList("subject-weak", d.weak_spots.map((x) => weakRow(x, { showCourse: false })), '<p class="empty-small">None noted.</p>')}
       </div>
       <div class="panel">
         <div class="section-head"><h2>Deadlines</h2><button class="btn small ghost" data-act="add-deadline" data-course="${c.id}">+ Add</button></div>
-        <ul class="list">${d.deadlines.map((x) => deadlineRow(x, { showCourse: false })).join("")}</ul>
+        ${shortList("subject-deadlines", d.deadlines.map((x) => deadlineRow(x, { showCourse: false })))}
       </div>
       <div class="panel">
         <div class="section-head"><h2>Study time</h2><span class="muted">${esc(d.week_total)} this week, ${esc(d.total)} in total</span></div>
-        ${sessions ? `<ul class="list">${sessions}</ul>` : '<p class="empty-small">No study time logged yet.</p>'}
+        ${shortList("subject-sessions", sessions, '<p class="empty-small">No study time logged yet.</p>')}
       </div>
     </aside>
   </div>`;
@@ -1720,7 +1721,11 @@ const actions = {
   "add-weak": (el) => weakForm(el.dataset.course ? Number(el.dataset.course) : null),
   "edit-weak": (el) => weakForm(null, currentWeak(el.dataset.id)),
   "toggle-weak": (el) => act("toggle_weak", Number(el.dataset.id)),
-  "toggle-all-deadlines": () => { state.allDeadlines = !state.allDeadlines; renderView(); },
+  "toggle-list": (el) => {
+    const name = el.dataset.list;
+    if (!state.expanded.delete(name)) state.expanded.add(name);
+    renderView();
+  },
   "delete-weak": async (el) => { if (await confirmBox("Delete weak spot?", currentWeak(el.dataset.id).description)) act("delete_weak", Number(el.dataset.id)); },
 
   "add-deadline": (el) => deadlineForm(el.dataset.course ? Number(el.dataset.course) : null),
