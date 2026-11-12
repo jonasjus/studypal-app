@@ -191,6 +191,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-bottom: 1px solid var(--border);
 }
 .running.break { background: var(--ok-soft); }
+/* The countdown's progress, filling the bar from the left (set by updateClock as --progress). */
+.running.has-progress {
+  --fill: color-mix(in srgb, var(--accent) 24%, var(--accent-soft));
+  background: linear-gradient(to right, var(--fill) var(--progress), var(--accent-soft) var(--progress));
+}
+.running.break.has-progress {
+  --fill: color-mix(in srgb, var(--ok) 24%, var(--ok-soft));
+  background: linear-gradient(to right, var(--fill) var(--progress), var(--ok-soft) var(--progress));
+}
 .running.overtime .clock { color: var(--ok); }
 .running.overtime .pulse { background: var(--ok); }
 .running .clock { font: 700 1.75rem/1 var(--figures); min-width: 80px; }

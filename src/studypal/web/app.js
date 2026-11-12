@@ -662,10 +662,23 @@ function goalReached(r) {
   return !!r.goal_seconds && r.elapsed_seconds + (Date.now() - state.runningAt) / 1000 >= r.goal_seconds;
 }
 
+// The bar's background fills from left to right as the countdown runs (a spun timer or a Pomodoro phase).
+function setProgress(el, done) {
+  const bar = el.closest(".running");
+  if (!bar) return;
+  if (done === null) { bar.style.removeProperty("--progress"); bar.classList.remove("has-progress"); return; }
+  bar.classList.add("has-progress");
+  bar.style.setProperty("--progress", `${(Math.max(0, Math.min(1, done)) * 100).toFixed(2)}%`);
+}
+
 function updateClock() {
   const r = state.running, el = $("#clock");
   if (!r || !el) return;
   const passed = (Date.now() - state.runningAt) / 1000;
+  if (r.kind === "timer") setProgress(el, r.goal_seconds ? (r.elapsed_seconds + passed) / r.goal_seconds : null);
+  else if (r.phase === "focus" && r.focus_done) setProgress(el, 1);
+  else if (r.remaining_seconds === null || !r.length_seconds) setProgress(el, null);
+  else setProgress(el, 1 - (r.paused ? r.remaining_seconds : r.remaining_seconds - passed) / r.length_seconds);
   if (r.kind === "timer" && r.goal_seconds) {
     const left = r.goal_seconds - (r.elapsed_seconds + passed);
     el.textContent = left > 0 ? clock(left) : `+${clock(-left)}`;
@@ -702,7 +715,6 @@ async function refresh() {
   const v = state.view;
   let data;
   await beforeRefresh();
-  const focus = keepFocus();
   const view = VIEWS[v.name] || VIEWS.overview;
   try {
     data = await view.load(v.id);
@@ -717,6 +729,8 @@ async function refresh() {
     return;
   }
   state.data = data;
+  // Taken only now, after the load, so whatever was typed while it was loading is kept too.
+  const focus = keepFocus();
   if (v.name === "overview") {
     $("#today").textContent = data.today;
     state.colors = data.colors;
@@ -762,12 +776,16 @@ let afterRender = () => {};
 function keepFocus() {
   const el = document.activeElement;
   if (!el || !el.id || !$("#view").contains(el)) return null;
-  return { id: el.id, start: el.selectionStart, end: el.selectionEnd, scroll: el.scrollTop };
+  // A text field's typing isn't saved anywhere yet (a to-do being written), so the redrawn page would bring it
+  // back empty. Carry the text over along with the cursor.
+  const typed = (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && /^(text|search|url|email|number|)$/.test(el.getAttribute("type") || ""))) ? el.value : null;
+  return { id: el.id, value: typed, start: el.selectionStart, end: el.selectionEnd, scroll: el.scrollTop };
 }
 
 function restoreFocus(f) {
   const el = f && document.getElementById(f.id);
   if (!el) return;
+  if (f.value !== null && "value" in el && el.value !== f.value) el.value = f.value;
   el.focus({ preventScroll: true });
   try { el.setSelectionRange(f.start, f.end); } catch (e) { /* not a text field */ }
   el.scrollTop = f.scroll;
